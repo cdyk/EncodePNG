@@ -1,8 +1,17 @@
-PROJECT( playground )
+PROJECT( imgcompbench )
 CMAKE_MINIMUM_REQUIRED( VERSION 2.8 )
 
 SET( CMAKE_CXX_FLAGS "-Wall -O3 -msse4 -g2 -DDEBUG -DUNIX -std=gnu++0x ${CMAKE_CXX_FLAGS}" )
 FIND_PACKAGE( ZLIB REQUIRED )
-
-ADD_EXECUTABLE( main "main.cpp" )
-TARGET_LINK_LIBRARIES( main ${ZLIB_LIBRARIES} rt )
+FIND_PACKAGE( PNG REQUIRED )
+FIND_LIBRARY( JPEG_TURBO_LIBRARIES NAMES jpeg )
+ADD_EXECUTABLE( main "main.cpp"
+                "tinia_png.hpp"
+                "tinia_png.cpp"
+                "timer.hpp"
+                "timer.cpp"
+                "homebrew_png.hpp"
+                "homebrew_png.cpp"
+                "libjpeg_turbo_wrap.hpp"
+                "libjpeg_turbo_wrap.cpp")
+TARGET_LINK_LIBRARIES( main ${JPEG_TURBO_LIBRARIES} ${PNG_LIBRARIES} ${ZLIB_LIBRARIES} rt )
