@@ -1,3 +1,6 @@
+#include <zlib.h>
+#include <xmmintrin.h>
+#include <smmintrin.h>
 #include <vector>
 #include <fstream>
 #include <iostream>
@@ -839,6 +842,197 @@ writeIDAT2( std::ofstream& file, const std::vector<char>& img, const std::vector
 }
 
 
+struct CacheItem
+{
+    int         m_literal;
+    int         m_next;
+};
+
+void
+writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
+{
+
+    std::vector<CacheItem> window( );
+    
+    std::vector<unsigned char> IDAT(8);
+    // IDAT chunk header
+    IDAT[4] = 'I';
+    IDAT[5] = 'D';
+    IDAT[6] = 'A';
+    IDAT[7] = 'T';
+
+    // --- create deflate chunk ------------------------------------------------
+    IDAT.push_back(  8 + (7<<4) );  // CM=8=deflate, CINFO=7=32K window size = 112
+    IDAT.push_back( 94 /* 28*/ );           // FLG
+    
+    unsigned int dat_size;
+    unsigned int s1 = 1;
+    unsigned int s2 = 0;
+    {
+        BitPusher pusher( IDAT );
+        pusher.pushBitsReverse( 6, 3 );    // 5 = 101
+
+        for( int j=0; j<HEIGHT; j++) {
+            
+            // push scan-line filter type
+            pusher.pushBitsReverse( 1 + 48, 8 );    // Push a 1 (diff with left)
+            s1 += 1;                                // update adler 1 & 2
+            s2 += s1;                          
+
+            unsigned int trgb_p = 0xffffffff;
+            unsigned int c = 0;
+            for(int i=0; i<WIDTH; i++ ) {
+                
+                unsigned int trgb_l = 0;
+                for(int k=0; k<3; k++) {
+                    unsigned int t = (img[ 3*WIDTH*j + 3*i + k ]
+                                   - (i==0?0:img[3*WIDTH*j+3*(i-1)+k ] )) & 0xffu;
+
+                    s1 = (s1 + t);                  // update adler 1 & 2
+                    s2 = (s2 + s1);
+                    trgb_l = (trgb_l<<8) | t;
+                }
+                if( (i==0) || (i==WIDTH-1) || (trgb_l != trgb_p) || ( c >= 66 ) ) {
+                    // flush copies
+                    if( c == 0 ) {
+                        // no copies, 1 or 2 never occurs.
+                    }
+                    else if( c < 11 ) {
+                        pusher.pushBitsReverse( c-2, 7 );
+                        pusher.pushBitsReverse( 2, 5 );
+                    }
+                    else if( c < 19 ) {
+                        int t = c - 11;
+                        pusher.pushBitsReverse( (t>>1)+9, 7 );
+                        pusher.pushBitsReverse( (t&1), 1 );
+                        pusher.pushBitsReverse( 2, 5 );
+                    }
+                    else if( c < 35 ) {
+                        int t = c - 19;
+                        pusher.pushBitsReverse( (t>>2)+13, 7 );
+                        pusher.pushBits( (t&3), 2 );
+                        pusher.pushBitsReverse( 2, 5 );
+                    }
+                    else if( c < 67 ) {
+                        int t = c - 35;
+                        pusher.pushBitsReverse( (t>>3)+17, 7 );
+                        pusher.pushBits( (t&7), 3 );
+                        pusher.pushBitsReverse( 2, 5 );
+                    }
+                    c = 0;
+                   
+                    
+                    // need to write literal
+                    int r = (trgb_l >> 16)& 0xffu;
+                    if( r < 144 ) {
+                        pusher.pushBitsReverse( r + 48, 8 );
+                    }
+                    else {
+                        pusher.pushBitsReverse( r + (400-144), 9 ); 
+                    }
+                    int g = (trgb_l >> 8)& 0xffu;
+                    if( g < 144 ) {
+                        pusher.pushBitsReverse( g + 48, 8 );
+                    }
+                    else {
+                        pusher.pushBitsReverse( g + (400-144), 9 ); 
+                    }
+                    int b = (trgb_l >> 0)& 0xffu;
+                    if( b < 144 ) {
+                        pusher.pushBitsReverse( b + 48, 8 );
+                    }
+                    else {
+                        pusher.pushBitsReverse( b + (400-144), 9 ); 
+                    }
+                    trgb_p = trgb_l;            
+                }
+                else {
+                    c+=3;
+                }
+            }
+            
+            // We can do up to 5552 iterations before we need to run the modulo,
+            // see comment on NMAX adler32.c in zlib.
+            s1 = s1 % 65521;
+            s2 = s2 % 65521;
+        }
+        pusher.pushBits( 0, 7 );    // EOB 
+    }
+    unsigned int adler = (s2<<16) + s1;
+    
+    IDAT.push_back( ((adler)>>24)&0xffu ); // Adler32
+    IDAT.push_back( ((adler)>>16)&0xffu );
+    IDAT.push_back( ((adler)>> 8)&0xffu );
+    IDAT.push_back( ((adler)>> 0)&0xffu );
+
+    // --- end deflate chunk --------------------------------------------------
+
+
+    
+    
+    // Update PNG chunk content size for IDAT
+    dat_size = IDAT.size()-8u;
+    IDAT[0] = ((dat_size)>>24)&0xffu;
+    IDAT[1] = ((dat_size)>>16)&0xffu;
+    IDAT[2] = ((dat_size)>>8)&0xffu;
+    IDAT[3] = ((dat_size)>>0)&0xffu;
+
+    unsigned long crc = CRC( crc_table, IDAT.data()+4, dat_size+4 );
+    IDAT.resize( IDAT.size()+4u );  // make room for CRC
+    IDAT[dat_size+8]  = ((crc)>>24)&0xffu;
+    IDAT[dat_size+9]  = ((crc)>>16)&0xffu;
+    IDAT[dat_size+10] = ((crc)>>8)&0xffu;
+    IDAT[dat_size+11] = ((crc)>>0)&0xffu;
+
+    
+    
+#if 1
+    if( 1) {
+        std::vector<unsigned char> quux(10*1024*1024);
+
+        z_stream stream;
+        int err;
+    
+        stream.next_in = (z_const Bytef *)IDAT.data()+8;
+        stream.avail_in = (uInt)IDAT.size()-8;
+        stream.next_out = quux.data();
+        stream.avail_out = quux.size();
+        stream.zalloc = (alloc_func)0;
+        stream.zfree = (free_func)0;
+
+        err = inflateInit(&stream);
+        if (err != Z_OK) {
+            std::cerr << "inflateInit failed: " << err << "\n";
+            abort();
+        }
+       
+        err = inflate(&stream, Z_FINISH);
+
+        if( stream.msg != NULL ) {
+            std::cerr << stream.msg << "\n";
+        }
+        
+
+        uLongf quux_size = quux.size();
+        err = uncompress( quux.data(), &quux_size, IDAT.data() + 8, IDAT.size() - 8 );
+        if( err != Z_OK ) {
+            std::cerr << "uncompress="
+                      << err
+                      << "\n";
+        }
+        if( quux_size != ((3*WIDTH+1)*HEIGHT) ) {
+            std::cerr << "uncompress_size="  << quux_size
+                      << ", should be=" << ((3*WIDTH+1)*HEIGHT) << "\n";
+        }
+        
+    }
+#endif
+    
+    file.write( reinterpret_cast<char*>( IDAT.data() ), dat_size+12 );
+}
+
+
+
 
 void
 writeIEND( std::ofstream& file, const std::vector<unsigned long>& crc_table  )
@@ -853,138 +1047,13 @@ writeIEND( std::ofstream& file, const std::vector<unsigned long>& crc_table  )
 
 
 
-#if 0
-#include <zlib.h>
-#include <cstdlib>
-#include <cmath>
-#include <stdexcept>
-#include <time.h>
-#include <xmmintrin.h>
-#include <smmintrin.h>
-
-#define WIDTH 1024 //6
-#define HEIGHT 768
-
-class TimeStamp
-{
-public:
-    TimeStamp()
-    {
-        clock_gettime( CLOCK_MONOTONIC, &m_time );
-    }
-    
-    static
-    double
-    delta( const TimeStamp& start, const TimeStamp& stop )
-    {
-        timespec delta;
-        if( (stop.m_time.tv_nsec-start.m_time.tv_nsec) < 0 ) {
-            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec - 1;
-            delta.tv_nsec = 1000000000 + stop.m_time.tv_nsec - start.m_time.tv_nsec;
-        }
-        else {
-            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec;
-            delta.tv_nsec = stop.m_time.tv_nsec - start.m_time.tv_nsec;
-        }
-        return delta.tv_sec + 1e-9*delta.tv_nsec;        
-    }
-    
-    
-protected:
-    timespec m_time;
-};
-
-
-
-
-
-
-
-
-
-
-void
-createDummyImage( std::vector<unsigned char>& img )
-{
-    img.resize( 3*WIDTH*HEIGHT );
-    for(int j=0; j<HEIGHT; j++) {
-        for(int i=0; i<WIDTH; i++) {
-            float x = i/(WIDTH/2.f)-1.f;
-            float y=  j/(HEIGHT/2.f)-1.f;
-            float r = sqrt( x*x+y*y);
-            if( r < 0.9f ) {
-                img[ 3*(WIDTH*j+i) + 0 ] = 255;
-                img[ 3*(WIDTH*j+i) + 1 ] = 255*0.5f*(sinf(30*r)+1.f);;
-                img[ 3*(WIDTH*j+i) + 2 ] = 255*0.5f*(sinf(40*r)+1.f);
-            }
-            else if( r < 1.f ) {
-                int q = (int)(200*r);
-                if( q & 1 ) {
-                    img[ 3*(WIDTH*j+i) + 0 ] = q;
-                    img[ 3*(WIDTH*j+i) + 1 ] = 255;
-                    img[ 3*(WIDTH*j+i) + 2 ] = 255;
-                }
-                else {
-                    img[ 3*(WIDTH*j+i) + 0 ] = 0;
-                    img[ 3*(WIDTH*j+i) + 1 ] = q;
-                    img[ 3*(WIDTH*j+i) + 2 ] = 0;
-                }
-            }
-            else {
-                img[ 3*(WIDTH*j+i) + 0 ] = 255;
-                img[ 3*(WIDTH*j+i) + 1 ] = 255;
-                img[ 3*(WIDTH*j+i) + 2 ] = 0;
-            }
-        }
-    }
-}
-
-
-
-int
-main(int argc, char **argv)
-{
-    std::vector<unsigned long> crc_table;
-    createCRCTable( crc_table );
-    
-    std::vector<unsigned char> img;
-    createDummyImage( img );
-
-    
-    std::ofstream png2( "img2.png" );
-    writeSignature( png2 );
-    writeIHDR( png2, crc_table );
-    writeIDAT2( png2, img, crc_table );
-    writeIEND( png2, crc_table );
-    png2.close();
-
-    std::ofstream png3( "img3.png" );
-    writeSignature( png3 );
-    writeIHDR( png3, crc_table );
-    writeIDAT3( png3, img, crc_table );
-    writeIEND( png3, crc_table );
-    png3.close();
-
-    {
-    std::ofstream png2( "img2.png" );
-    writeSignature( png2 );
-    writeIHDR( png2, crc_table );
-    writeIDAT2( png2, img, crc_table );
-    writeIEND( png2, crc_table );
-    png2.close();
-    }
-
-    
-    return 0;
-}
-#endif
 
 int
 homebrew_png2( const std::vector<char> &rgb,
               const int w,
               const int h )
 {
-    std::ofstream png( "img.png" );
+    std::ofstream png( "homebrew2.png" );
     writeSignature( png );
     writeIHDR( png, crc_table, w, h );
     writeIDAT2( png, rgb, crc_table, w, h );
@@ -1001,7 +1070,24 @@ homebrew_png3( const std::vector<char> &rgb,
               const int w,
               const int h )
 {
-    std::ofstream png( "img.png" );
+    std::ofstream png( "homebrew3.png" );
+    writeSignature( png );
+    writeIHDR( png, crc_table, w, h );
+    writeIDAT3( png, rgb, crc_table, w, h );
+    writeIEND( png, crc_table );
+
+    int bytes = png.tellp();
+    png.close();
+    
+    return bytes;
+}
+
+int
+homebrew_png4( const std::vector<char> &rgb,
+              const int w,
+              const int h )
+{
+    std::ofstream png( "homebrew4.png" );
     writeSignature( png );
     writeIHDR( png, crc_table, w, h );
     writeIDAT3( png, rgb, crc_table, w, h );
