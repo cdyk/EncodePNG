@@ -54,10 +54,11 @@ trell_png_crc( unsigned char* p, size_t length )
 }
 
 
-bool
-tinia_png( const std::vector<char> &rgb,
+int
+tinia_png( double& seconds_in_zlib,
+           const std::vector<char> &rgb,
               const int w,
-              const int h )
+              const int h, int compression )
 {
     std::vector<unsigned char> filtered( 3*(w+1)*h );
 
@@ -113,18 +114,23 @@ tinia_png( const std::vector<char> &rgb,
     int c;
     {
         TimeStamp start;
-        c = compress( (Bytef*)(p+8), &bound, (Bytef*)filtered.data(), (3*w+1)*h );
+        if( compression < 0 ) {
+            c = compress( (Bytef*)(p+8), &bound, (Bytef*)filtered.data(), (3*w+1)*h );
+        }
+        else {
+            c = compress2( (Bytef*)(p+8), &bound, (Bytef*)filtered.data(), (3*w+1)*h, compression );
+        }
         TimeStamp stop;
-        std::cerr << "compress: " << TimeStamp::delta( start, stop ) << "\n";
+        seconds_in_zlib = TimeStamp::delta( start, stop );
     }
 
     if( c == Z_MEM_ERROR ) {
         std::cerr << "Z_MEM_ERROR\n";
-        return false;
+        return 0;
     }
     else if( c == Z_BUF_ERROR ) {
         std::cerr << "Z_BUF_ERROR\n";
-        return false;
+        return 0;
     }
 
     *p++ = ((bound)>>24)&0xffu;    // compressed image data size
@@ -161,7 +167,7 @@ tinia_png( const std::vector<char> &rgb,
     fwrite( png.data(), 1, p-png.data(), of );
     fclose( of);
 
-    return true;
+    return p-png.data();
 }
 
 

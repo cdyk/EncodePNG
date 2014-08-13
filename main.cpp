@@ -7,6 +7,7 @@
 #include "timer.hpp"
 #include "tinia_png.hpp"
 #include "libjpeg_turbo_wrap.hpp"
+#include "homebrew_png.hpp"
 
 
 
@@ -94,22 +95,72 @@ main(int argc, char **argv)
                 }
                 TimeStamp stop;
                 
-                std::cerr << "Read [" << w<< 'x' << h << "] RGB pixels, " << TimeStamp::delta( start, stop ) << "\n";
+                std::cerr << "Read [" << w<< 'x' << h << "] RGB pixels ("<< (3*w*h) << " bytes), " << TimeStamp::delta( start, stop ) << "\n";
             }
              
             create_crc_table();
             {
+                double seconds_in_zlib;
                 TimeStamp start;
-                tinia_png( image, w, h );
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, -1 );
                 TimeStamp stop;
-                std::cerr << "tinia_png: " << TimeStamp::delta( start, stop ) << "\n";
+                std::cerr << "tinia_png:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)"  << " ("<< bytes << " bytes)\n";
+            }
+            {
+                double seconds_in_zlib;
+                TimeStamp start;
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, 0 );
+                TimeStamp stop;
+                std::cerr << "tinia_png 0:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)"  << " ("<< bytes << " bytes)\n";
+            }
+            {
+                double seconds_in_zlib;
+                TimeStamp start;
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, 1 );
+                TimeStamp stop;
+                std::cerr << "tinia_png 1:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)"  << " ("<< bytes << " bytes)\n";
+            }
+            {
+                double seconds_in_zlib;
+                TimeStamp start;
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, 2 );
+                TimeStamp stop;
+                std::cerr << "tinia_png 2:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)"  << " ("<< bytes << " bytes)\n";
+            }
+            {
+                double seconds_in_zlib;
+                TimeStamp start;
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, 3 );
+                TimeStamp stop;
+                std::cerr << "tinia_png 3:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)"  << " ("<< bytes << " bytes)\n";
+            }
+            {
+                double seconds_in_zlib;
+                TimeStamp start;
+                int bytes = tinia_png( seconds_in_zlib, image, w, h, 4 );
+                TimeStamp stop;
+                std::cerr << "tinia_png 4:\t" << TimeStamp::delta( start, stop ) << " (" << seconds_in_zlib << "s in zlib)" <<" ("<< bytes << " bytes)\n";
+            }
+
+            createCRCTable();
+            {
+                TimeStamp start;
+                int bytes = homebrew_png2( image, w, h );
+                TimeStamp stop;
+                std::cerr << "homebrew_wrap2:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
+            }
+            {
+                TimeStamp start;
+                int bytes = homebrew_png3( image, w, h );
+                TimeStamp stop;
+                std::cerr << "homebrew_wrap3:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }
 
             {
                 TimeStamp start;
-                libjpeg_turbo_wrap( image, w, h );
+                int bytes = libjpeg_turbo_wrap( image, w, h );
                 TimeStamp stop;
-                std::cerr << "libjpeg_turbo_wrap: " << TimeStamp::delta( start, stop ) << "\n";
+                std::cerr << "libjpeg_turbo_wrap:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }
             
         }

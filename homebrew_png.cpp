@@ -1,49 +1,36 @@
-#if 0
 #include <vector>
-#include <zlib.h>
 #include <fstream>
 #include <iostream>
-#include <cstdlib>
-#include <cmath>
-#include <stdexcept>
-#include <time.h>
-#include <xmmintrin.h>
-#include <smmintrin.h>
 
-#define WIDTH 1024 //6
-#define HEIGHT 768
+static std::vector<unsigned long> crc_table;
 
-class TimeStamp
+void
+createCRCTable( )
 {
-public:
-    TimeStamp()
-    {
-        clock_gettime( CLOCK_MONOTONIC, &m_time );
-    }
-    
-    static
-    double
-    delta( const TimeStamp& start, const TimeStamp& stop )
-    {
-        timespec delta;
-        if( (stop.m_time.tv_nsec-start.m_time.tv_nsec) < 0 ) {
-            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec - 1;
-            delta.tv_nsec = 1000000000 + stop.m_time.tv_nsec - start.m_time.tv_nsec;
+    crc_table.resize( 256 );
+    for( int j=0; j<256; j++) {
+        unsigned long int c = j;
+        for( int i=0; i<8; i++) {
+            if( c & 0x1 ) {
+                c = 0xedb88320ul ^ (c>>1);
+            }
+            else {
+                c = c>>1;
+            }
         }
-        else {
-            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec;
-            delta.tv_nsec = stop.m_time.tv_nsec - start.m_time.tv_nsec;
-        }
-        return delta.tv_sec + 1e-9*delta.tv_nsec;        
-    }
-    
-    
-protected:
-    timespec m_time;
-};
+        crc_table[j] = c;
+    }    
+}
 
-
-
+void
+writeSignature( std::ofstream& file )
+{
+    unsigned char signature[8] = 
+    {
+        137, 80, 78, 71, 13, 10, 26, 10
+    };
+    file.write( reinterpret_cast<char*>( signature ), sizeof(signature ) );    
+}
 
 class BitPusher
 {
@@ -352,9 +339,8 @@ CRC( const std::vector<unsigned long>& crc_table, const unsigned char* p, size_t
 
 
 void
-writeIDAT3( std::ofstream& file, const std::vector<unsigned char>& img, const std::vector<unsigned long>& crc_table  )
+writeIDAT3( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
-    TimeStamp start;
     
     
     std::vector<unsigned char> IDAT(8);
@@ -573,10 +559,9 @@ writeIDAT3( std::ofstream& file, const std::vector<unsigned char>& img, const st
     IDAT[dat_size+11] = ((crc)>>0)&0xffu;
 
     
-    TimeStamp stop;
-    std::cerr << "IDAT3 used " << TimeStamp::delta( start, stop ) << "\n";
     
 
+#if 0
     if( 1) {
         std::vector<unsigned char> quux(10*1024*1024);
 
@@ -615,82 +600,12 @@ writeIDAT3( std::ofstream& file, const std::vector<unsigned char>& img, const st
                       << ", should be=" << ((3*WIDTH+1)*HEIGHT) << "\n";
         }
     }
-    
+#endif
     
     file.write( reinterpret_cast<char*>( IDAT.data() ), dat_size+12 );
 }
-
-
-
-
-
 void
-createCRCTable( std::vector<unsigned long>& crc_table )
-{
-    crc_table.resize( 256 );
-    for( int j=0; j<256; j++) {
-        unsigned long int c = j;
-        for( int i=0; i<8; i++) {
-            if( c & 0x1 ) {
-                c = 0xedb88320ul ^ (c>>1);
-            }
-            else {
-                c = c>>1;
-            }
-        }
-        crc_table[j] = c;
-    }    
-}
-
-void
-createDummyImage( std::vector<unsigned char>& img )
-{
-    img.resize( 3*WIDTH*HEIGHT );
-    for(int j=0; j<HEIGHT; j++) {
-        for(int i=0; i<WIDTH; i++) {
-            float x = i/(WIDTH/2.f)-1.f;
-            float y=  j/(HEIGHT/2.f)-1.f;
-            float r = sqrt( x*x+y*y);
-            if( r < 0.9f ) {
-                img[ 3*(WIDTH*j+i) + 0 ] = 255;
-                img[ 3*(WIDTH*j+i) + 1 ] = 255*0.5f*(sinf(30*r)+1.f);;
-                img[ 3*(WIDTH*j+i) + 2 ] = 255*0.5f*(sinf(40*r)+1.f);
-            }
-            else if( r < 1.f ) {
-                int q = (int)(200*r);
-                if( q & 1 ) {
-                    img[ 3*(WIDTH*j+i) + 0 ] = q;
-                    img[ 3*(WIDTH*j+i) + 1 ] = 255;
-                    img[ 3*(WIDTH*j+i) + 2 ] = 255;
-                }
-                else {
-                    img[ 3*(WIDTH*j+i) + 0 ] = 0;
-                    img[ 3*(WIDTH*j+i) + 1 ] = q;
-                    img[ 3*(WIDTH*j+i) + 2 ] = 0;
-                }
-            }
-            else {
-                img[ 3*(WIDTH*j+i) + 0 ] = 255;
-                img[ 3*(WIDTH*j+i) + 1 ] = 255;
-                img[ 3*(WIDTH*j+i) + 2 ] = 0;
-            }
-        }
-    }
-}
-
-void
-writeSignature( std::ofstream& file )
-{
-    unsigned char signature[8] = 
-    {
-        137, 80, 78, 71, 13, 10, 26, 10
-    };
-    file.write( reinterpret_cast<char*>( signature ), sizeof(signature ) );    
-}
-
-
-void
-writeIHDR( std::ofstream& file, const std::vector<unsigned long>& crc_table )
+writeIHDR( std::ofstream& file, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT )
 {
     // IHDR chunk, 13 + 12 (length, type, crc) = 25 bytes
     unsigned char IHDR[ 25 ] = 
@@ -718,65 +633,10 @@ writeIHDR( std::ofstream& file, const std::vector<unsigned long>& crc_table )
 }
 
 
-void
-writeIDAT( std::ofstream& file, const std::vector<unsigned char>& img, const std::vector<unsigned long>& crc_table  )
-{
-    TimeStamp start;
-
-    std::vector<unsigned char> filtered( (3*WIDTH+1)*HEIGHT );
-    for( int j=0; j<HEIGHT; j++) {
-        filtered[ (3*WIDTH+1)*j + 0 ] = 0;
-        for(int i=0; i<WIDTH; i++) {
-            filtered[ (3*WIDTH+1)*j + 1 + 3*i + 0 ] = img[ 3*WIDTH*j + 3*i + 0 ];
-            filtered[ (3*WIDTH+1)*j + 1 + 3*i + 1 ] = img[ 3*WIDTH*j + 3*i + 1 ];
-            filtered[ (3*WIDTH+1)*j + 1 + 3*i + 2 ] = img[ 3*WIDTH*j + 3*i + 2 ];
-        }
-    }
-    std::vector<unsigned char> IDAT(16*1024*1024);
-    
-    uLongf dat_size = IDAT.size()-12;
- 
-    TimeStamp c_start;
-    int c = compress( (Bytef*)(IDAT.data()+8), &dat_size, (Bytef*)filtered.data(), filtered.size() );
-    TimeStamp c_stop;
-    
-    
-    if( c == Z_MEM_ERROR ) {
-        std::cerr << "Z_MEM_ERROR\n";
-        exit( EXIT_FAILURE );
-    }
-    else if( c == Z_BUF_ERROR ) {
-        std::cerr << "Z_BUF_ERROR\n";
-        exit( EXIT_FAILURE );
-    }
-    
-    IDAT[0] = ((dat_size)>>24)&0xffu;
-    IDAT[1] = ((dat_size)>>16)&0xffu;
-    IDAT[2] = ((dat_size)>>8)&0xffu;
-    IDAT[3] = ((dat_size)>>0)&0xffu;
-    IDAT[4] = 'I';
-    IDAT[5] = 'D';
-    IDAT[6] = 'A';
-    IDAT[7] = 'T';
-
-    unsigned long crc = CRC( crc_table, IDAT.data()+4, dat_size+4 );
-    IDAT[dat_size+8]  = ((crc)>>24)&0xffu;    // image width
-    IDAT[dat_size+9]  = ((crc)>>16)&0xffu;
-    IDAT[dat_size+10] = ((crc)>>8)&0xffu;
-    IDAT[dat_size+11] = ((crc)>>0)&0xffu;
-
-    TimeStamp stop;
-    std::cerr << "IDAT used " << TimeStamp::delta( start, stop )
-              << ", compress used " << TimeStamp::delta( c_start, c_stop ) << "\n";
-
-    file.write( reinterpret_cast<char*>( IDAT.data() ), dat_size+12 );
-}
-
 
 void
-writeIDAT2( std::ofstream& file, const std::vector<unsigned char>& img, const std::vector<unsigned long>& crc_table  )
+writeIDAT2( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
-    TimeStamp start;
     
     
     std::vector<unsigned char> IDAT(8);
@@ -932,10 +792,8 @@ writeIDAT2( std::ofstream& file, const std::vector<unsigned char>& img, const st
     IDAT[dat_size+11] = ((crc)>>0)&0xffu;
 
     
-    TimeStamp stop;
-    std::cerr << "IDAT2 used " << TimeStamp::delta( start, stop ) << "\n";
     
-
+#if 0
     if( 1) {
         std::vector<unsigned char> quux(10*1024*1024);
 
@@ -975,7 +833,7 @@ writeIDAT2( std::ofstream& file, const std::vector<unsigned char>& img, const st
         }
         
     }
-    
+#endif
     
     file.write( reinterpret_cast<char*>( IDAT.data() ), dat_size+12 );
 }
@@ -994,6 +852,95 @@ writeIEND( std::ofstream& file, const std::vector<unsigned long>& crc_table  )
  }
 
 
+
+#if 0
+#include <zlib.h>
+#include <cstdlib>
+#include <cmath>
+#include <stdexcept>
+#include <time.h>
+#include <xmmintrin.h>
+#include <smmintrin.h>
+
+#define WIDTH 1024 //6
+#define HEIGHT 768
+
+class TimeStamp
+{
+public:
+    TimeStamp()
+    {
+        clock_gettime( CLOCK_MONOTONIC, &m_time );
+    }
+    
+    static
+    double
+    delta( const TimeStamp& start, const TimeStamp& stop )
+    {
+        timespec delta;
+        if( (stop.m_time.tv_nsec-start.m_time.tv_nsec) < 0 ) {
+            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec - 1;
+            delta.tv_nsec = 1000000000 + stop.m_time.tv_nsec - start.m_time.tv_nsec;
+        }
+        else {
+            delta.tv_sec = stop.m_time.tv_sec - start.m_time.tv_sec;
+            delta.tv_nsec = stop.m_time.tv_nsec - start.m_time.tv_nsec;
+        }
+        return delta.tv_sec + 1e-9*delta.tv_nsec;        
+    }
+    
+    
+protected:
+    timespec m_time;
+};
+
+
+
+
+
+
+
+
+
+
+void
+createDummyImage( std::vector<unsigned char>& img )
+{
+    img.resize( 3*WIDTH*HEIGHT );
+    for(int j=0; j<HEIGHT; j++) {
+        for(int i=0; i<WIDTH; i++) {
+            float x = i/(WIDTH/2.f)-1.f;
+            float y=  j/(HEIGHT/2.f)-1.f;
+            float r = sqrt( x*x+y*y);
+            if( r < 0.9f ) {
+                img[ 3*(WIDTH*j+i) + 0 ] = 255;
+                img[ 3*(WIDTH*j+i) + 1 ] = 255*0.5f*(sinf(30*r)+1.f);;
+                img[ 3*(WIDTH*j+i) + 2 ] = 255*0.5f*(sinf(40*r)+1.f);
+            }
+            else if( r < 1.f ) {
+                int q = (int)(200*r);
+                if( q & 1 ) {
+                    img[ 3*(WIDTH*j+i) + 0 ] = q;
+                    img[ 3*(WIDTH*j+i) + 1 ] = 255;
+                    img[ 3*(WIDTH*j+i) + 2 ] = 255;
+                }
+                else {
+                    img[ 3*(WIDTH*j+i) + 0 ] = 0;
+                    img[ 3*(WIDTH*j+i) + 1 ] = q;
+                    img[ 3*(WIDTH*j+i) + 2 ] = 0;
+                }
+            }
+            else {
+                img[ 3*(WIDTH*j+i) + 0 ] = 255;
+                img[ 3*(WIDTH*j+i) + 1 ] = 255;
+                img[ 3*(WIDTH*j+i) + 2 ] = 0;
+            }
+        }
+    }
+}
+
+
+
 int
 main(int argc, char **argv)
 {
@@ -1003,12 +950,6 @@ main(int argc, char **argv)
     std::vector<unsigned char> img;
     createDummyImage( img );
 
-    std::ofstream png( "img.png" );
-    writeSignature( png );
-    writeIHDR( png, crc_table );
-    writeIDAT( png, img, crc_table );
-    writeIEND( png, crc_table );
-    png.close();
     
     std::ofstream png2( "img2.png" );
     writeSignature( png2 );
@@ -1037,3 +978,37 @@ main(int argc, char **argv)
     return 0;
 }
 #endif
+
+int
+homebrew_png2( const std::vector<char> &rgb,
+              const int w,
+              const int h )
+{
+    std::ofstream png( "img.png" );
+    writeSignature( png );
+    writeIHDR( png, crc_table, w, h );
+    writeIDAT2( png, rgb, crc_table, w, h );
+    writeIEND( png, crc_table );
+
+    int bytes = png.tellp();
+    png.close();
+    
+    return bytes;
+}
+
+int
+homebrew_png3( const std::vector<char> &rgb,
+              const int w,
+              const int h )
+{
+    std::ofstream png( "img.png" );
+    writeSignature( png );
+    writeIHDR( png, crc_table, w, h );
+    writeIDAT3( png, rgb, crc_table, w, h );
+    writeIEND( png, crc_table );
+
+    int bytes = png.tellp();
+    png.close();
+    
+    return bytes;
+}

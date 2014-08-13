@@ -3,7 +3,7 @@
 #include <cstdio>
 #include "libjpeg_turbo_wrap.hpp"
 
-bool
+int
 libjpeg_turbo_wrap( const std::vector<char>& rgb,
                     const int w,
                     const int h )
@@ -17,7 +17,7 @@ libjpeg_turbo_wrap( const std::vector<char>& rgb,
     FILE* of = fopen( "output.jpg", "wb" );
     if( of == NULL ) {
         std::cerr << "Cannot open 'output.jpg'\n";
-        return false;
+        return 0;
     }
     jpeg_stdio_dest( &cinfo, of );
 
@@ -32,12 +32,14 @@ libjpeg_turbo_wrap( const std::vector<char>& rgb,
     for(int j=0; j<h; j++ ) {
         rows[ j ] = (unsigned char*)(rgb.data() + 3*w*j);
     }
-    std::cerr << w << " x " << h << "\n";
 
     jpeg_start_compress(&cinfo, TRUE);
     jpeg_write_scanlines( &cinfo, rows.data(), h );
     jpeg_finish_compress(&cinfo);
+    
+    int bytes = ftell( of );
+    
     fclose(of);
     jpeg_destroy_compress(&cinfo);
-    return true;
+    return bytes;
 }
