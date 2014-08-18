@@ -848,11 +848,53 @@ struct CacheItem
     int         m_next;
 };
 
+static inline unsigned char
+hash( unsigned char a, unsigned char b, unsigned char c )
+{
+    return a | ((b<<3) | (b>>5)) | ((c<<5) | (c>>3));
+}
+
 void
 writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
+    unsigned int adler;// = (s2<<16) + s1;
+    std::vector<unsigned char> filtered( (3*WIDTH+1)*HEIGHT );
+    {
+        for( int j=0; j<HEIGHT; j++) {
+            const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*j;
+            unsigned char* out = filtered.data() + (3*WIDTH+1)*j;
+            *out++ = 1;       // Filter type 1 (diff with left);
 
-    std::vector<CacheItem> window( );
+            unsigned int p0 = 0;
+            unsigned int p1 = 0;
+            unsigned int p2 = 0;
+            for( int i=0; i<WIDTH; i++ ) {
+                unsigned int c0 = *in++;
+                unsigned int c1 = *in++;
+                unsigned int c2 = *in++;
+                unsigned int v0 = (c0 - p0) & 0xffu;
+                unsigned int v1 = (c1 - p1) & 0xffu;
+                unsigned int v2 = (c2 - p2) & 0xffu;
+                p0 = c0;
+                p1 = c1;
+                p2 = c2;
+                *out++ = v0;
+                *out++ = v1;
+                *out++ = v2;
+            }
+        }
+    }
+
+    {
+        unsigned int s1 = 1;
+        unsigned int s2 = 0;
+        for(int i=0; i<filtered.size(); i++) {
+            s1 = (s1 + filtered[i])%65521;
+            s2 = (s2 + s1)%65521;
+        }
+        adler = (s2 << 16) + s1;
+    }
+
     
     std::vector<unsigned char> IDAT(8);
     // IDAT chunk header
@@ -865,100 +907,150 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     IDAT.push_back(  8 + (7<<4) );  // CM=8=deflate, CINFO=7=32K window size = 112
     IDAT.push_back( 94 /* 28*/ );           // FLG
     
-    unsigned int dat_size;
-    unsigned int s1 = 1;
-    unsigned int s2 = 0;
+
     {
+        std::vector<int> head(256, -0xfffff);
+        std::vector<int> next( 0x7fff, -0xfffff );
+
+        // The compressed sequence is packed such that:
+        // - Data elements are packed in order of increasing bit number within
+        //   a byte, that is, starting with bit 0.
+        // - Data elements, except Huffman codes, are packed starting with the
+        //   least-significant bit of the data elements.
+        // - Huffman-codes are packed starting with the most-significant bit of
+        //   the code.
+
         BitPusher pusher( IDAT );
-        pusher.pushBitsReverse( 6, 3 );    // 5 = 101
+        pusher.pushBits( 1, 1 );    // BFINAL
+        pusher.pushBits( 1, 2 );    // BTYPE (=01)
 
-        for( int j=0; j<HEIGHT; j++) {
-            
-            // push scan-line filter type
-            pusher.pushBitsReverse( 1 + 48, 8 );    // Push a 1 (diff with left)
-            s1 += 1;                                // update adler 1 & 2
-            s2 += s1;                          
+        int N = filtered.size();
+        int i=0;
+        while( i < N ) {
 
-            unsigned int trgb_p = 0xffffffff;
-            unsigned int c = 0;
-            for(int i=0; i<WIDTH; i++ ) {
-                
-                unsigned int trgb_l = 0;
-                for(int k=0; k<3; k++) {
-                    unsigned int t = (img[ 3*WIDTH*j + 3*i + k ]
-                                   - (i==0?0:img[3*WIDTH*j+3*(i-1)+k ] )) & 0xffu;
+            unsigned int h = 0;
+            if( i+2 < N ) {
+                h = hash( filtered[i], filtered[i+1], filtered[i+2] );
+            }
 
-                    s1 = (s1 + t);                  // update adler 1 & 2
-                    s2 = (s2 + s1);
-                    trgb_l = (trgb_l<<8) | t;
+            int j = head[h];
+
+            int b_l = 0;
+            int b_j = 0;
+            for( int k=0; k<10 && (i-j < 0x7fff); k++ ) {
+
+                if(i-j > 257 ) {
+                    j = next[ j & 0x7fff ];
+                    continue;
                 }
-                if( (i==0) || (i==WIDTH-1) || (trgb_l != trgb_p) || ( c >= 66 ) ) {
-                    // flush copies
-                    if( c == 0 ) {
-                        // no copies, 1 or 2 never occurs.
-                    }
-                    else if( c < 11 ) {
-                        pusher.pushBitsReverse( c-2, 7 );
-                        pusher.pushBitsReverse( 2, 5 );
-                    }
-                    else if( c < 19 ) {
-                        int t = c - 11;
-                        pusher.pushBitsReverse( (t>>1)+9, 7 );
-                        pusher.pushBitsReverse( (t&1), 1 );
-                        pusher.pushBitsReverse( 2, 5 );
-                    }
-                    else if( c < 35 ) {
-                        int t = c - 19;
-                        pusher.pushBitsReverse( (t>>2)+13, 7 );
-                        pusher.pushBits( (t&3), 2 );
-                        pusher.pushBitsReverse( 2, 5 );
-                    }
-                    else if( c < 67 ) {
-                        int t = c - 35;
-                        pusher.pushBitsReverse( (t>>3)+17, 7 );
-                        pusher.pushBits( (t&7), 3 );
-                        pusher.pushBitsReverse( 2, 5 );
-                    }
-                    c = 0;
-                   
-                    
-                    // need to write literal
-                    int r = (trgb_l >> 16)& 0xffu;
-                    if( r < 144 ) {
-                        pusher.pushBitsReverse( r + 48, 8 );
-                    }
-                    else {
-                        pusher.pushBitsReverse( r + (400-144), 9 ); 
-                    }
-                    int g = (trgb_l >> 8)& 0xffu;
-                    if( g < 144 ) {
-                        pusher.pushBitsReverse( g + 48, 8 );
-                    }
-                    else {
-                        pusher.pushBitsReverse( g + (400-144), 9 ); 
-                    }
-                    int b = (trgb_l >> 0)& 0xffu;
-                    if( b < 144 ) {
-                        pusher.pushBitsReverse( b + 48, 8 );
-                    }
-                    else {
-                        pusher.pushBitsReverse( b + (400-144), 9 ); 
-                    }
-                    trgb_p = trgb_l;            
+
+                int M = std::min( std::min( 67, N-i), i-j );
+
+                int l=0;
+                while( (l<M) && (filtered[j+l] == filtered[i+l]) ) {
+                    l++;
+                }
+                if( l > b_l ) {
+                    b_l = l;
+                    b_j = j;
+                }
+                j = next[ j & 0x7fff ];
+            }
+            if( b_l < 3 ) {
+                // No matches found, emit literal
+                next[ i & 0x7fff ] = head[h];
+                head[h] = i;
+                unsigned int v = filtered[i];
+                if( v < 144 ) {
+                    pusher.pushBitsReverse( v + 48, 8 );
                 }
                 else {
-                    c+=3;
+                    pusher.pushBitsReverse( v + (400-144), 9 );
                 }
+                i++;
             }
-            
-            // We can do up to 5552 iterations before we need to run the modulo,
-            // see comment on NMAX adler32.c in zlib.
-            s1 = s1 % 65521;
-            s2 = s2 % 65521;
+            else {
+
+                // length
+                if( b_l < 11 ) {
+                    pusher.pushBitsReverse( b_l-2, 7 );
+                }
+                else if( b_l < 19 ) {
+                    int t = b_l - 11;
+                    pusher.pushBitsReverse( (t>>1)+9, 7 );
+                    pusher.pushBitsReverse( (t&1), 1 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+                else if( b_l < 35 ) {
+                    int t = b_l - 19;
+                    pusher.pushBitsReverse( (t>>2)+13, 7 );
+                    pusher.pushBits( (t&3), 2 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+                else if( b_l < 67 ) {
+                    int t = b_l - 35;
+                    pusher.pushBitsReverse( (t>>3)+17, 7 );
+                    pusher.pushBits( (t&7), 3 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+
+                // distance
+                int d = i - b_j;
+                if( d < 1 ) {
+                    std::cerr << "FATAL\n"; abort();
+                }
+                else if( d < 5 ) {
+                    pusher.pushBitsReverse( d-1, 5 );
+                }
+                else if( d < 9 ) {
+                    int t = d-5;
+                    pusher.pushBitsReverse( (t>>1) + 4, 5 );
+                    pusher.pushBits( t&1, 1 );
+                }
+                else if( d < 17 ) {
+                    int t = d-9;
+                    pusher.pushBitsReverse( (t>>2) + 8, 5 );
+                    pusher.pushBits( t&3, 2 );
+                }
+                else if( d < 33 ) {
+                    int t = d-17;
+                    pusher.pushBitsReverse( (t>>3) + 8, 5 );
+                    pusher.pushBits( t&7, 3 );
+                }
+                else if( d < 65 ) {
+                    int t = d-33;
+                    pusher.pushBitsReverse( (t>>4) + 8, 5 );
+                    pusher.pushBits( t&0xf, 4 );
+                }
+                else if( d < 129 ) {
+                    int t = d-65;
+                    pusher.pushBitsReverse( (t>>5) + 8, 5 );
+                    pusher.pushBits( t&0x1f, 5 );
+                }
+                else if( d < 257 ) {
+                    int t = d-129;
+                    pusher.pushBitsReverse( (t>>6) + 8, 5 );
+                    pusher.pushBits( t&0x3f, 6 );
+                }
+
+                for(int l=i; l<i+b_l; l++ ) {
+                    unsigned int h = 0;
+                    if( l+2 < N ) {
+                        h = hash( filtered[i], filtered[i+1], filtered[i+2] );
+                    }
+                    next[ l & 0x7fff ] = head[ h ];
+                    head[ h ] = l;
+                }
+
+                i = i + b_l;
+            }
+
+            // Insert triplet hash in front of list
+
         }
-        pusher.pushBits( 0, 7 );    // EOB 
+        pusher.pushBits( 0, 7 );    // EOB
     }
-    unsigned int adler = (s2<<16) + s1;
+
     
     IDAT.push_back( ((adler)>>24)&0xffu ); // Adler32
     IDAT.push_back( ((adler)>>16)&0xffu );
@@ -967,11 +1059,8 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 
     // --- end deflate chunk --------------------------------------------------
 
-
-    
-    
     // Update PNG chunk content size for IDAT
-    dat_size = IDAT.size()-8u;
+    int dat_size = IDAT.size()-8u;
     IDAT[0] = ((dat_size)>>24)&0xffu;
     IDAT[1] = ((dat_size)>>16)&0xffu;
     IDAT[2] = ((dat_size)>>8)&0xffu;
@@ -984,8 +1073,8 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     IDAT[dat_size+10] = ((crc)>>8)&0xffu;
     IDAT[dat_size+11] = ((crc)>>0)&0xffu;
 
-    
-    
+    file.write( reinterpret_cast<char*>( IDAT.data() ), IDAT.size() );
+
 #if 1
     if( 1) {
         std::vector<unsigned char> quux(10*1024*1024);
@@ -1028,7 +1117,6 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     }
 #endif
     
-    file.write( reinterpret_cast<char*>( IDAT.data() ), dat_size+12 );
 }
 
 
@@ -1090,7 +1178,7 @@ homebrew_png4( const std::vector<char> &rgb,
     std::ofstream png( "homebrew4.png" );
     writeSignature( png );
     writeIHDR( png, crc_table, w, h );
-    writeIDAT3( png, rgb, crc_table, w, h );
+    writeIDAT4( png, rgb, crc_table, w, h );
     writeIEND( png, crc_table );
 
     int bytes = png.tellp();

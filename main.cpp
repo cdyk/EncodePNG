@@ -155,6 +155,12 @@ main(int argc, char **argv)
                 TimeStamp stop;
                 std::cerr << "homebrew_wrap3:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }
+            {
+                TimeStamp start;
+                int bytes = homebrew_png4( image, w, h );
+                TimeStamp stop;
+                std::cerr << "homebrew_wrap4:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
+            }
 
             {
                 TimeStamp start;
