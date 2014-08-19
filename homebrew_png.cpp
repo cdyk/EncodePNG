@@ -1,6 +1,8 @@
 #include <zlib.h>
 #include <xmmintrin.h>
+#include <emmintrin.h>
 #include <smmintrin.h>
+#include <tmmintrin.h>
 #include <vector>
 #include <fstream>
 #include <iostream>
@@ -887,7 +889,46 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 {
     unsigned int adler;// = (s2<<16) + s1;
     std::vector<unsigned char> filtered( (3*WIDTH+1)*HEIGHT );
-    {
+    if(0) {
+        //  Number of 16-byte fetches per scanline
+        int blocks = 3*WIDTH/16;
+
+        // Create move-mask for last block of each scanline
+        __m128i mask = _mm_cmplt_epi8( _mm_set_epi8( 15, 14, 13, 12, 11, 10, 9, 8,
+                                                      7,  6,  5,  4,  3,  2, 1, 0 ),
+                                       _mm_set1_epi8( 3*WIDTH-16*blocks ) );
+        {
+            const unsigned char* in = (unsigned char*)(img.data());
+            unsigned char* out = filtered.data();
+            *out++ = 0;
+            for(int b=0; b<blocks; b++ ) {
+                _mm_storeu_si128( (__m128i*)out, _mm_lddqu_si128( (__m128i const*)in ) );
+                in += 16;
+                out += 16;
+            }
+            _mm_maskmoveu_si128( _mm_lddqu_si128( (__m128i const*)in ), mask, (char*)out );
+        }
+
+        for( int j=1; j<HEIGHT; j++ ) {
+            const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*(j-1);
+            unsigned char* out = filtered.data() + (3*WIDTH+1)*j;
+            *out++ = 2;
+            for(int b=0; b<blocks; b++ ) {
+                __m128i _t0 = _mm_lddqu_si128( (__m128i const*)in );
+                __m128i _t1 = _mm_lddqu_si128( (__m128i const*)(in + 3*WIDTH ) );
+
+                _mm_storeu_si128( (__m128i*)out,
+                                  _mm_sub_epi8( _t1, _t0 ) );
+                in += 16;
+                out += 16;
+            }
+            _mm_maskmoveu_si128( _mm_lddqu_si128( (__m128i const*)in ),
+                                 mask,
+                                 (char*)out );
+
+        }
+    }
+    else {
         for( int j=0; j<HEIGHT; j++) {
             const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*j;
             unsigned char* out = filtered.data() + (3*WIDTH+1)*j;
@@ -913,6 +954,69 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
     }
 
+#if 1
+    {
+        unsigned int s1 = 1;
+        unsigned int s2 = 0;
+
+        int blocks = filtered.size()/8;
+
+        __m128i w0 = _mm_set_epi16( 1, 2, 3, 4, 5, 6, 7, 8 );
+        __m128i w1 = _mm_set_epi16( 9, 10, 11, 12, 13, 14, 15, 16 );
+
+
+        for(int b=0; b<blocks; b++) {
+            __m128i v = _mm_lddqu_si128( (__m128i const*)(filtered.data() + 8*b) );
+
+            __m128i l = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
+            __m128i l0 = _mm_mullo_epi16( w0, l );
+            __m128i l1 = _mm_hadd_epi16( l0, l );
+
+            __m128i h = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
+            __m128i h0 = _mm_mullo_epi16( w1, h );
+            __m128i h1 = _mm_hadd_epi16( h0, h );
+
+            __m128i r = _mm_hadd_epi16( l1, h1 );
+            r = _mm_hadd_epi16( r, r );
+            //r = _mm_hadd_epi16( r, r );
+
+            s2 = (s2 + 8*s1 + ((unsigned short*)(&r))[0] )%65521;
+            s1 = (s1 + ((unsigned short*)(&r))[1] )%65521;
+        }
+        for(int i=8*blocks; i<filtered.size(); i++ ) {
+            s1 = (s1 + filtered[i])%65521;
+            s2 = (s2 + s1)%65521;
+        }
+        adler = (s2 << 16) + s1;
+    }
+#else
+    {
+        unsigned int s1 = 1;
+        unsigned int s2 = 0;
+
+        int blocks = filtered.size()/8;
+        for(int b=0; b<blocks; b++) {
+            unsigned int v0 = filtered[8*b+0];
+            unsigned int v1 = filtered[8*b+1];
+            unsigned int v2 = filtered[8*b+2];
+            unsigned int v3 = filtered[8*b+3];
+            unsigned int v4 = filtered[8*b+4];
+            unsigned int v5 = filtered[8*b+5];
+            unsigned int v6 = filtered[8*b+6];
+            unsigned int v7 = filtered[8*b+7];
+            s2 = (s2 + 8*(s1 + v0) + 7*v1 + 6*v2 + 5*v3 + 4*v4 + 3*v5 + 2*v6 + v7 )%65521;
+            s1 = (s1 + v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 )%65521;
+
+        }
+        for(int i=8*blocks; i<filtered.size(); i++ ) {
+            s1 = (s1 + filtered[i])%65521;
+            s2 = (s2 + s1)%65521;
+        }
+        adler = (s2 << 16) + s1;
+    }
+#endif
+
+    /*
     {
         unsigned int s1 = 1;
         unsigned int s2 = 0;
@@ -922,7 +1026,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
         adler = (s2 << 16) + s1;
     }
-
+*/
     
 
     
@@ -937,16 +1041,19 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         int N = filtered.size();
         int i=0;
         while( i < N ) {
+            unsigned int h = (13*(13*filtered[i] + filtered[i+1])+filtered[i+2])&0xffu;
 
-            unsigned int h = hash( filtered[i], filtered[i+1], filtered[i+2] );
 
             int j = head[h];
+            next[ i & 0x7fff ] = head[h];
+            head[h] = i;
+
 
             int b_l = 0;
             int b_j = 0;
 
 
-            for( int k=0; k<10 && (i-j < 0x7fff); k++ ) {
+            for( int k=0; k<10 && (i-j <= 0x7fff); k++ ) {
 
                 int l = lengthOfMatch( filtered.data() + j,
                                        filtered.data() + i,
@@ -964,20 +1071,20 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             if( b_l < 3 ) {
                  // No matches found, emit literal
                 codestream.push_back( 0x80000000u | filtered[i] );
-                next[ i & 0x7fff ] = head[h];
-                head[h] = i;
                 i++;
             }
             else {
                 // emit length-distance pair
                 codestream.push_back( ((unsigned int)b_l << 16u) | (i - b_j) );
-                for(int l=i; l<i+b_l; l++ ) {
-                    unsigned int h = 0;
-                    if( l+2 < N ) {
-                        h = hash( filtered[i], filtered[i+1], filtered[i+2] );
-                    }
+                unsigned int v0 = 13*13*filtered[i+1];
+                unsigned int v1 = 13*filtered[i+2];
+                for(int l=i+1; l<i+b_l; l++ ) {
+                    unsigned int v2 = filtered[l+2];
+                    unsigned int h = (v0 + v1 + v2)&0xffu;
                     next[ l & 0x7fff ] = head[ h ];
                     head[ h ] = l;
+                    v0 = 13*v1;
+                    v1 = 13*v2;
                 }
                 i = i + b_l;
             }
