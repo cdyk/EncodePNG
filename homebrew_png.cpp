@@ -854,6 +854,34 @@ hash( unsigned char a, unsigned char b, unsigned char c )
     return a | ((b<<3) | (b>>5)) | ((c<<5) | (c>>3));
 }
 
+
+int
+lengthOfMatch( const unsigned char* a,
+               const unsigned char* b,
+               const int N )
+{
+
+#if 1
+    for(int i=0; i<N; i+=16 ) {
+        __m128i _a = _mm_lddqu_si128( (__m128i const*)(a+i) );
+        __m128i _b = _mm_lddqu_si128( (__m128i const*)(b+i) );
+        unsigned int q = _mm_movemask_epi8( _mm_cmpeq_epi8( _a, _b ) );
+        if( q != 0xffffu ) {
+            int l = i + __builtin_ctz( ~q );
+            return std::min( N, l );
+        }
+    }
+#else
+    for( int i=0; i<N; i++ ) {
+        if( *a++ != *b++ ) {
+            return i;
+        }
+    }
+#endif
+    return N;
+}
+
+
 void
 writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
@@ -910,26 +938,26 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         int i=0;
         while( i < N ) {
 
-            unsigned int h = 0;
-            if( i+2 < N ) {
-                h = hash( filtered[i], filtered[i+1], filtered[i+2] );
-            }
+            unsigned int h = hash( filtered[i], filtered[i+1], filtered[i+2] );
 
             int j = head[h];
 
             int b_l = 0;
             int b_j = 0;
+
+
             for( int k=0; k<10 && (i-j < 0x7fff); k++ ) {
 
-                int M = std::min( std::min( 257, N-i), i-j );
+                int l = lengthOfMatch( filtered.data() + j,
+                                       filtered.data() + i,
+                                       std::min( std::min( 258, N-i), i-j ) );
 
-                int l=0;
-                while( (l<M) && (filtered[j+l] == filtered[i+l]) ) {
-                    l++;
-                }
                 if( l > b_l ) {
                     b_l = l;
                     b_j = j;
+                    if( b_l == 258 ) {
+                        break;// we can't get a longer match.
+                    }
                 }
                 j = next[ j & 0x7fff ];
             }
@@ -1172,7 +1200,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 
     file.write( reinterpret_cast<char*>( IDAT.data() ), IDAT.size() );
 
-#if 0
+#if 1
     if( 1) {
         std::vector<unsigned char> quux(10*1024*1024);
 
@@ -1280,6 +1308,6 @@ homebrew_png4( const std::vector<char> &rgb,
 
     int bytes = png.tellp();
     png.close();
-    
+
     return bytes;
 }
