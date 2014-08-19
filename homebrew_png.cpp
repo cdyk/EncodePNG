@@ -896,21 +896,12 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     }
 
     
-    std::vector<unsigned char> IDAT(8);
-    // IDAT chunk header
-    IDAT[4] = 'I';
-    IDAT[5] = 'D';
-    IDAT[6] = 'A';
-    IDAT[7] = 'T';
 
-    // --- create deflate chunk ------------------------------------------------
-    IDAT.push_back(  8 + (7<<4) );  // CM=8=deflate, CINFO=7=32K window size = 112
-    IDAT.push_back( 94 /* 28*/ );           // FLG
     
 
+    // --- Find string duplicates and create code stream -----------------------
     std::vector<unsigned int> codestream;
     codestream.reserve( filtered.size() );
-
     {
         std::vector<int> head(256, -0xfffff);
         std::vector<int> next( 0x7fff, -0xfffff );
@@ -930,7 +921,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             int b_j = 0;
             for( int k=0; k<10 && (i-j < 0x7fff); k++ ) {
 
-                int M = std::min( std::min( 10, N-i), i-j );
+                int M = std::min( std::min( 257, N-i), i-j );
 
                 int l=0;
                 while( (l<M) && (filtered[j+l] == filtered[i+l]) ) {
@@ -965,6 +956,17 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
     }
 
+    // --- Encode using fixed Huffman codes ------------------------------------
+    std::vector<unsigned char> IDAT(8);
+    // IDAT chunk header
+    IDAT[4] = 'I';
+    IDAT[5] = 'D';
+    IDAT[6] = 'A';
+    IDAT[7] = 'T';
+
+    // --- create deflate chunk ------------------------------------------------
+    IDAT.push_back(  8 + (7<<4) );  // CM=8=deflate, CINFO=7=32K window size = 112
+    IDAT.push_back( 94 /* 28*/ );           // FLG
     {
         BitPusher pusher( IDAT );
         pusher.pushBits( 1, 1 );    // BFINAL
@@ -973,9 +975,9 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         for(auto it=codestream.begin(); it!=codestream.end(); ++it ) {
             unsigned int code = *it;
 
-            if( code&0x80000000u ) { // literal
+            // --- Literal value -----------------------------------------------
+            if( code&0x80000000u ) {
                 code = code&0xffu;
-
                 if( code < 144 ) {
                     pusher.pushBitsReverse( code + 48, 8 );
                 }
@@ -984,42 +986,82 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
                 }
             }
 
-            else {  // length-distance pair
+            // --- Length-distance pair ----------------------------------------
+            else {
                 unsigned int length   = code >> 16u;
                 unsigned int distance = code & 0xffffu;
 
+                // --- 7-bit length Huffman code -------------------------------
+                if( length < 115 ) {    // 7-bit length Huffman code
+                    unsigned int length_code, length_bits, length_bits_n;
 
-                // length
-                if( length < 11 ) {
-                    pusher.pushBitsReverse( length-2, 7 );
+                    if( length < 11 ) {
+                        length_code     = length-2;
+                        length_bits     = 0;
+                        length_bits_n   = 0;
+                    }
+                    else if(length < 19 ) {
+                        length_code     = ((length-11)>>1)+9;
+                        length_bits     = (length-11)&0x1;
+                        length_bits_n   = 1;
+                    }
+                    else if(length < 35 ) {
+                        length_code     = ((length-19)>>2)+13;
+                        length_bits     = (length-19)&0x3;
+                        length_bits_n   = 2;
+                    }
+                    else if(length < 67 ) {
+                        length_code     = ((length-35)>>3)+(273-256);
+                        length_bits     = (length-35)&0x7;
+                        length_bits_n   = 3;
+                    }
+                    else {  // length < 131
+                        length_code     = ((length-67)>>4)+(277-256);
+                        length_bits     = (length-67)&0xf;
+                        length_bits_n   = 4;
+                    }
+                    length_code = ((length_code&0x55u)<<1u) | ((length_code>>1u)&0x55u);
+                    length_code = ((length_code&0x33u)<<2u) | ((length_code>>2u)&0x33u);
+                    length_code = ((length_code&0x0fu)<<4u) | ((length_code>>4u)&0x0fu);
+                    length_code = (length_code>>1);
+                    length_code = length_code | (length_bits<<7);
+                    pusher.pushBits( length_code, 7 + length_bits_n );
                 }
-                else if(length < 19 ) {
-                    int t = length - 11;
-                    pusher.pushBitsReverse( (t>>1)+9, 7 );
-                    pusher.pushBitsReverse( (t&1), 1 );
-                    pusher.pushBitsReverse( 2, 5 );
+                else if( length < 258 ) {                  // 8-bit length Huffman code
+                    unsigned int length_code, length_bits, length_bits_n;
+
+                    if( length < 131 ) {
+                        length_code     = 192;
+                        length_bits     = (length-115)&0xf;
+                        length_bits_n   = 4;
+                    }
+                    else if( length < 258 ) {
+                        length_code     = ((length-131)>>5)+(281-280+192);
+                        length_bits     = (length-131)&0x1f;
+                        length_bits_n   = 5;
+                    }
+                    else {
+                        length_code     = (285-280+192);
+                        length_bits     = 0;
+                        length_bits_n   = 0;
+                   }
+
+                    length_code = ((length_code&0x55u)<<1u) | ((length_code>>1u)&0x55u);
+                    length_code = ((length_code&0x33u)<<2u) | ((length_code>>2u)&0x33u);
+                    length_code = ((length_code&0x0fu)<<4u) | ((length_code>>4u)&0x0fu);
+                    length_code = length_code | (length_bits<<8);
+                    pusher.pushBits( length_code, 8 + length_bits_n );
+
                 }
-                else if( length < 35 ) {
-                    int t = length - 19;
-                    pusher.pushBitsReverse( (t>>2)+13, 7 );
-                    pusher.pushBits( (t&3), 2 );
-                    pusher.pushBitsReverse( 2, 5 );
-                }
-                else if( length < 67 ) {
-                    int t = length - 35;
-                    pusher.pushBitsReverse( (t>>3)+17, 7 );
-                    pusher.pushBits( (t&7), 3 );
-                    pusher.pushBitsReverse( 2, 5 );
+                else {
+
+                    pusher.pushBits( 163, 8 );  // = 197 reversed.
                 }
 
-                // distance
+                // --- Encode distance Huffman codes ---------------------------
                 unsigned int distance_code, distance_bits, distance_bits_n;
 
-
-                if( distance < 1 ) {
-                    std::cerr << "FATAL\n"; abort();
-                }
-                else if( distance < 5 ) {
+                if( distance < 5 ) {
                     distance_code   = distance-1;
                     distance_bits   = 0;
                     distance_bits_n = 0;
@@ -1097,14 +1139,8 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 
                 // Add extra bits
                 distance_code = distance_code | (distance_bits<<5u);
-
                 pusher.pushBits( distance_code, 5u + distance_bits_n );
-
-
-
             }
-
-
         }
 
 
@@ -1136,7 +1172,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 
     file.write( reinterpret_cast<char*>( IDAT.data() ), IDAT.size() );
 
-#if 1
+#if 0
     if( 1) {
         std::vector<unsigned char> quux(10*1024*1024);
 
