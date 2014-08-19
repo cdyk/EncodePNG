@@ -959,31 +959,37 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         unsigned int s1 = 1;
         unsigned int s2 = 0;
 
-        int blocks = filtered.size()/8;
+        int blocks = filtered.size()/16;
 
         __m128i w0 = _mm_set_epi16( 1, 2, 3, 4, 5, 6, 7, 8 );
         __m128i w1 = _mm_set_epi16( 9, 10, 11, 12, 13, 14, 15, 16 );
 
 
         for(int b=0; b<blocks; b++) {
-            __m128i v = _mm_lddqu_si128( (__m128i const*)(filtered.data() + 8*b) );
+            __m128i v = _mm_lddqu_si128( (__m128i const*)(filtered.data() + 16*b) );
 
-            __m128i l = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
-            __m128i l0 = _mm_mullo_epi16( w0, l );
-            __m128i l1 = _mm_hadd_epi16( l0, l );
+            __m128i l0 = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
+            __m128i l1 = _mm_mullo_epi16( w1, l0 );
 
-            __m128i h = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
-            __m128i h0 = _mm_mullo_epi16( w1, h );
-            __m128i h1 = _mm_hadd_epi16( h0, h );
+            __m128i h0 = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
+            __m128i h1 = _mm_mullo_epi16( w0, h0 );
 
-            __m128i r = _mm_hadd_epi16( l1, h1 );
-            r = _mm_hadd_epi16( r, r );
-            //r = _mm_hadd_epi16( r, r );
+            __m128i r = _mm_hadd_epi16( _mm_add_epi16( l1, h1 ),
+                                        _mm_add_epi16( l0, h0 ) );
+            r = _mm_hadd_epi16( r, _mm_setzero_si128() );
+            r = _mm_hadd_epi16( r, _mm_setzero_si128() );
 
-            s2 = (s2 + 8*s1 + ((unsigned short*)(&r))[0] )%65521;
-            s1 = (s1 + ((unsigned short*)(&r))[1] )%65521;
+            s2 = s2 + 16*s1 + ((unsigned short*)(&r))[0];
+            s1 = s1 + ((unsigned short*)(&r))[1];
+
+            // For each 256*16 = 4096th iteration we fix the modulo
+            if( b & 0xff == 0xff ) {
+                s2 = s2 % 65521;
+                s1 = s1 % 65521;
+            }
+
         }
-        for(int i=8*blocks; i<filtered.size(); i++ ) {
+        for(int i=16*blocks; i<filtered.size(); i++ ) {
             s1 = (s1 + filtered[i])%65521;
             s2 = (s2 + s1)%65521;
         }
