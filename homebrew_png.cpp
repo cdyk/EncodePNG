@@ -908,21 +908,12 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     IDAT.push_back( 94 /* 28*/ );           // FLG
     
 
+    std::vector<unsigned int> codestream;
+    codestream.reserve( filtered.size() );
+
     {
         std::vector<int> head(256, -0xfffff);
         std::vector<int> next( 0x7fff, -0xfffff );
-
-        // The compressed sequence is packed such that:
-        // - Data elements are packed in order of increasing bit number within
-        //   a byte, that is, starting with bit 0.
-        // - Data elements, except Huffman codes, are packed starting with the
-        //   least-significant bit of the data elements.
-        // - Huffman-codes are packed starting with the most-significant bit of
-        //   the code.
-
-        BitPusher pusher( IDAT );
-        pusher.pushBits( 1, 1 );    // BFINAL
-        pusher.pushBits( 1, 2 );    // BTYPE (=01)
 
         int N = filtered.size();
         int i=0;
@@ -939,12 +930,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             int b_j = 0;
             for( int k=0; k<10 && (i-j < 0x7fff); k++ ) {
 
-                if(i-j > 257 ) {
-                    j = next[ j & 0x7fff ];
-                    continue;
-                }
-
-                int M = std::min( std::min( 67, N-i), i-j );
+                int M = std::min( std::min( 10, N-i), i-j );
 
                 int l=0;
                 while( (l<M) && (filtered[j+l] == filtered[i+l]) ) {
@@ -957,82 +943,15 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
                 j = next[ j & 0x7fff ];
             }
             if( b_l < 3 ) {
-                // No matches found, emit literal
+                 // No matches found, emit literal
+                codestream.push_back( 0x80000000u | filtered[i] );
                 next[ i & 0x7fff ] = head[h];
                 head[h] = i;
-                unsigned int v = filtered[i];
-                if( v < 144 ) {
-                    pusher.pushBitsReverse( v + 48, 8 );
-                }
-                else {
-                    pusher.pushBitsReverse( v + (400-144), 9 );
-                }
                 i++;
             }
             else {
-
-                // length
-                if( b_l < 11 ) {
-                    pusher.pushBitsReverse( b_l-2, 7 );
-                }
-                else if( b_l < 19 ) {
-                    int t = b_l - 11;
-                    pusher.pushBitsReverse( (t>>1)+9, 7 );
-                    pusher.pushBitsReverse( (t&1), 1 );
-                    pusher.pushBitsReverse( 2, 5 );
-                }
-                else if( b_l < 35 ) {
-                    int t = b_l - 19;
-                    pusher.pushBitsReverse( (t>>2)+13, 7 );
-                    pusher.pushBits( (t&3), 2 );
-                    pusher.pushBitsReverse( 2, 5 );
-                }
-                else if( b_l < 67 ) {
-                    int t = b_l - 35;
-                    pusher.pushBitsReverse( (t>>3)+17, 7 );
-                    pusher.pushBits( (t&7), 3 );
-                    pusher.pushBitsReverse( 2, 5 );
-                }
-
-                // distance
-                int d = i - b_j;
-                if( d < 1 ) {
-                    std::cerr << "FATAL\n"; abort();
-                }
-                else if( d < 5 ) {
-                    pusher.pushBitsReverse( d-1, 5 );
-                }
-                else if( d < 9 ) {
-                    int t = d-5;
-                    pusher.pushBitsReverse( (t>>1) + 4, 5 );
-                    pusher.pushBits( t&1, 1 );
-                }
-                else if( d < 17 ) {
-                    int t = d-9;
-                    pusher.pushBitsReverse( (t>>2) + 8, 5 );
-                    pusher.pushBits( t&3, 2 );
-                }
-                else if( d < 33 ) {
-                    int t = d-17;
-                    pusher.pushBitsReverse( (t>>3) + 8, 5 );
-                    pusher.pushBits( t&7, 3 );
-                }
-                else if( d < 65 ) {
-                    int t = d-33;
-                    pusher.pushBitsReverse( (t>>4) + 8, 5 );
-                    pusher.pushBits( t&0xf, 4 );
-                }
-                else if( d < 129 ) {
-                    int t = d-65;
-                    pusher.pushBitsReverse( (t>>5) + 8, 5 );
-                    pusher.pushBits( t&0x1f, 5 );
-                }
-                else if( d < 257 ) {
-                    int t = d-129;
-                    pusher.pushBitsReverse( (t>>6) + 8, 5 );
-                    pusher.pushBits( t&0x3f, 6 );
-                }
-
+                // emit length-distance pair
+                codestream.push_back( ((unsigned int)b_l << 16u) | (i - b_j) );
                 for(int l=i; l<i+b_l; l++ ) {
                     unsigned int h = 0;
                     if( l+2 < N ) {
@@ -1041,15 +960,157 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
                     next[ l & 0x7fff ] = head[ h ];
                     head[ h ] = l;
                 }
-
                 i = i + b_l;
             }
+        }
+    }
 
-            // Insert triplet hash in front of list
+    {
+        BitPusher pusher( IDAT );
+        pusher.pushBits( 1, 1 );    // BFINAL
+        pusher.pushBits( 1, 2 );    // BTYPE (=01)
+
+        for(auto it=codestream.begin(); it!=codestream.end(); ++it ) {
+            unsigned int code = *it;
+
+            if( code&0x80000000u ) { // literal
+                code = code&0xffu;
+
+                if( code < 144 ) {
+                    pusher.pushBitsReverse( code + 48, 8 );
+                }
+                else {
+                    pusher.pushBitsReverse( code + (400-144), 9 );
+                }
+            }
+
+            else {  // length-distance pair
+                unsigned int length   = code >> 16u;
+                unsigned int distance = code & 0xffffu;
+
+
+                // length
+                if( length < 11 ) {
+                    pusher.pushBitsReverse( length-2, 7 );
+                }
+                else if(length < 19 ) {
+                    int t = length - 11;
+                    pusher.pushBitsReverse( (t>>1)+9, 7 );
+                    pusher.pushBitsReverse( (t&1), 1 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+                else if( length < 35 ) {
+                    int t = length - 19;
+                    pusher.pushBitsReverse( (t>>2)+13, 7 );
+                    pusher.pushBits( (t&3), 2 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+                else if( length < 67 ) {
+                    int t = length - 35;
+                    pusher.pushBitsReverse( (t>>3)+17, 7 );
+                    pusher.pushBits( (t&7), 3 );
+                    pusher.pushBitsReverse( 2, 5 );
+                }
+
+                // distance
+                unsigned int distance_code, distance_bits, distance_bits_n;
+
+
+                if( distance < 1 ) {
+                    std::cerr << "FATAL\n"; abort();
+                }
+                else if( distance < 5 ) {
+                    distance_code   = distance-1;
+                    distance_bits   = 0;
+                    distance_bits_n = 0;
+                }
+                else if( distance < 9 ) {
+                    distance_code   = ((distance-5)>>1)+4;
+                    distance_bits   = (distance-5)&0x1;
+                    distance_bits_n = 1;
+                }
+                else if( distance < 17 ) {
+                    distance_code   = ((distance-9)>>2)+6;
+                    distance_bits   = (distance-9)&0x3;
+                    distance_bits_n = 2;
+                }
+                else if( distance < 33 ) {
+                    distance_code   = ((distance-17)>>3)+8;
+                    distance_bits   = (distance-17)&0x7;
+                    distance_bits_n = 3;
+                }
+                else if( distance < 65 ) {
+                    distance_code   = ((distance-33)>>4)+10;
+                    distance_bits   = (distance-33)&0xf;
+                    distance_bits_n = 4;
+                }
+                else if( distance < 129 ) {
+                    distance_code   = ((distance-65)>>5)+12;
+                    distance_bits   = (distance-65)&0x1f;
+                    distance_bits_n = 5;
+                }
+                else if( distance < 257 ) {
+                    distance_code   = ((distance-129)>>6)+14;
+                    distance_bits   = (distance-129)&0x3f;
+                    distance_bits_n = 6;
+                }
+                else if( distance < 513 ) {
+                    distance_code   = ((distance-257)>>7)+16;
+                    distance_bits   = (distance-257)&0x7f;
+                    distance_bits_n = 7;
+                }
+                else if( distance < 1025 ) {
+                    distance_code   = ((distance-513)>>8)+18;
+                    distance_bits   = (distance-513)&0xff;
+                    distance_bits_n = 8;
+                }
+                else if( distance < 2049 ) {
+                    distance_code   = ((distance-1025)>>9)+20;
+                    distance_bits   = (distance-1025)&0x1ff;
+                    distance_bits_n = 9;
+                }
+                else if( distance < 4097 ) {
+                    distance_code   = ((distance-2049)>>10)+22;
+                    distance_bits   = (distance-2049)&0x3ff;
+                    distance_bits_n = 10;
+                }
+                else if( distance < 8193 ) {
+                    distance_code   = ((distance-4097)>>11)+24;
+                    distance_bits   = (distance-4097)&0x7ff;
+                    distance_bits_n = 11;
+                }
+                else if( distance < 16385 ) {
+                    distance_code   = ((distance-8193)>>12)+26;
+                    distance_bits   = (distance-8193)&0xfff;
+                    distance_bits_n = 12;
+                }
+                else {
+                    distance_code   = ((distance-16385)>>13)+28;
+                    distance_bits   = (distance-16385)&0x1fff;
+                    distance_bits_n = 13;
+                }
+
+                // Reverse bits in Huffman code
+                distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
+                distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
+                distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
+
+                // Add extra bits
+                distance_code = distance_code | (distance_bits<<5u);
+
+                pusher.pushBits( distance_code, 5u + distance_bits_n );
+
+
+
+            }
+
 
         }
+
+
         pusher.pushBits( 0, 7 );    // EOB
     }
+
 
     
     IDAT.push_back( ((adler)>>24)&0xffu ); // Adler32
