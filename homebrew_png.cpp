@@ -1071,25 +1071,18 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     codestream.reserve( filtered.size() );
     {
         std::vector<int> head(256, -0xfffff);
-        std::vector<int> next( 0x7fff, -0xfffff );
+        std::vector<int> next( 0x10000, -0xfffff );
 
         int N = filtered.size();
         int i=0;
         while( i < N ) {
             unsigned int h = (13*(13*filtered[i] + filtered[i+1])+filtered[i+2])&0xffu;
-
-
             int j = head[h];
-            next[ i & 0x7fff ] = head[h];
+            next[ i & 0x7fff ] = j;
             head[h] = i;
-
-
             int b_l = 0;
             int b_j = 0;
-
-
             for( int k=0; k<10 && (i-j <= 0x7fff); k++ ) {
-
                 int l = lengthOfMatch( filtered.data() + j,
                                        filtered.data() + i,
                                        std::min( std::min( 258, N-i), i-j ) );
@@ -1111,16 +1104,6 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             else {
                 // emit length-distance pair
                 codestream.push_back( ((unsigned int)b_l << 16u) | (i - b_j) );
-                unsigned int v0 = 13*13*filtered[i+1];
-                unsigned int v1 = 13*filtered[i+2];
-                for(int l=i+1; l<i+b_l; l++ ) {
-                    unsigned int v2 = filtered[l+2];
-                    unsigned int h = (v0 + v1 + v2)&0xffu;
-                    next[ l & 0x7fff ] = head[ h ];
-                    head[ h ] = l;
-                    v0 = 13*v1;
-                    v1 = 13*v2;
-                }
                 i = i + b_l;
             }
         }
@@ -1148,6 +1131,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             unsigned int code = *it;
 
             // --- Literal value -----------------------------------------------
+            // max 9 bits
             if( code&0x80000000u ) {
                 code = code&0xffu;
                 if( code < 144 ) {
@@ -1231,87 +1215,36 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
                 }
 
                 // --- Encode distance Huffman codes ---------------------------
-                unsigned int distance_code, distance_bits, distance_bits_n;
 
                 if( distance < 5 ) {
-                    distance_code   = distance-1;
-                    distance_bits   = 0;
-                    distance_bits_n = 0;
-                }
-                else if( distance < 9 ) {
-                    distance_code   = ((distance-5)>>1)+4;
-                    distance_bits   = (distance-5)&0x1;
-                    distance_bits_n = 1;
-                }
-                else if( distance < 17 ) {
-                    distance_code   = ((distance-9)>>2)+6;
-                    distance_bits   = (distance-9)&0x3;
-                    distance_bits_n = 2;
-                }
-                else if( distance < 33 ) {
-                    distance_code   = ((distance-17)>>3)+8;
-                    distance_bits   = (distance-17)&0x7;
-                    distance_bits_n = 3;
-                }
-                else if( distance < 65 ) {
-                    distance_code   = ((distance-33)>>4)+10;
-                    distance_bits   = (distance-33)&0xf;
-                    distance_bits_n = 4;
-                }
-                else if( distance < 129 ) {
-                    distance_code   = ((distance-65)>>5)+12;
-                    distance_bits   = (distance-65)&0x1f;
-                    distance_bits_n = 5;
-                }
-                else if( distance < 257 ) {
-                    distance_code   = ((distance-129)>>6)+14;
-                    distance_bits   = (distance-129)&0x3f;
-                    distance_bits_n = 6;
-                }
-                else if( distance < 513 ) {
-                    distance_code   = ((distance-257)>>7)+16;
-                    distance_bits   = (distance-257)&0x7f;
-                    distance_bits_n = 7;
-                }
-                else if( distance < 1025 ) {
-                    distance_code   = ((distance-513)>>8)+18;
-                    distance_bits   = (distance-513)&0xff;
-                    distance_bits_n = 8;
-                }
-                else if( distance < 2049 ) {
-                    distance_code   = ((distance-1025)>>9)+20;
-                    distance_bits   = (distance-1025)&0x1ff;
-                    distance_bits_n = 9;
-                }
-                else if( distance < 4097 ) {
-                    distance_code   = ((distance-2049)>>10)+22;
-                    distance_bits   = (distance-2049)&0x3ff;
-                    distance_bits_n = 10;
-                }
-                else if( distance < 8193 ) {
-                    distance_code   = ((distance-4097)>>11)+24;
-                    distance_bits   = (distance-4097)&0x7ff;
-                    distance_bits_n = 11;
-                }
-                else if( distance < 16385 ) {
-                    distance_code   = ((distance-8193)>>12)+26;
-                    distance_bits   = (distance-8193)&0xfff;
-                    distance_bits_n = 12;
+                    unsigned int distance_code;
+                    distance_code   = distance-1;   // 
+                    
+                    distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
+                    distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
+                    distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
+                    pusher.pushBits( distance_code, 5u );
                 }
                 else {
-                    distance_code   = ((distance-16385)>>13)+28;
-                    distance_bits   = (distance-16385)&0x1fff;
-                    distance_bits_n = 13;
+                    unsigned int distance_code, distance_bits, distance_bits_n;
+
+                    for(int i=1; i<14; i++ ) {
+                        if( distance < ((4<<i)+1) ) {
+                            distance_code   = ((distance - ((4<<(i-1))+1))>>i) + (2+2*i);
+                            distance_bits   = (distance - ((4<<(i-1))+1)) & ((1<<i)-1);
+                            distance_bits_n = i;
+                            break;
+                        }
+                    }
+                    
+                    distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
+                    distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
+                    distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
+                    
+                    distance_code = distance_code | (distance_bits<<5u);
+                    pusher.pushBits( distance_code, 5u + distance_bits_n );
                 }
 
-                // Reverse bits in Huffman code
-                distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
-                distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
-                distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
-
-                // Add extra bits
-                distance_code = distance_code | (distance_bits<<5u);
-                pusher.pushBits( distance_code, 5u + distance_bits_n );
             }
         }
 
