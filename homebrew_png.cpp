@@ -1,4 +1,5 @@
 #include <zlib.h>
+#include "timer.hpp"
 #include <xmmintrin.h>
 #include <emmintrin.h>
 #include <smmintrin.h>
@@ -887,6 +888,8 @@ lengthOfMatch( const unsigned char* a,
 void
 writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
+    TimeStamp T0;
+    
     unsigned int adler;// = (s2<<16) + s1;
     std::vector<unsigned char> filtered( (3*WIDTH+1)*HEIGHT );
     if(0) {
@@ -954,48 +957,75 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
     }
 
+    TimeStamp T1;
+    
 #if 1
     {
         unsigned int s1 = 1;
         unsigned int s2 = 0;
-
-        int blocks = filtered.size()/16;
-
-        __m128i w0 = _mm_set_epi16( 1, 2, 3, 4, 5, 6, 7, 8 );
-        __m128i w1 = _mm_set_epi16( 9, 10, 11, 12, 13, 14, 15, 16 );
-
-
+        unsigned int pre = (0x10 - ((unsigned long long int)(filtered.data())&0xfu))&0xfu;
+        for(int i=0; i<pre; i++ ) {
+            s1 = s1 + filtered[i];
+            s2 = s2 + s1;
+        }
+        
+        int blocks = (filtered.size()-pre)/16;
+        __m128i Z0 = _mm_set_epi32( 1, 2, 3, 4 );
+        __m128i Z1 = _mm_set1_epi32( 4 );
+        __m128i Z2 = _mm_set1_epi32( 65521 );
+        __m128i Z3 = _mm_set1_epi32( 2*65521 );
+        __m128i Z4 = _mm_set1_epi32( 4*65521 );
+        __m128i Z5 = _mm_set1_epi32( 8*65521 );
+        __m128i Z6 = _mm_set1_epi32( 16*65521 );
+        __m128i _tw = _mm_setzero_si128();
+        __m128i _tn = _mm_setzero_si128();        
         for(int b=0; b<blocks; b++) {
-            __m128i v = _mm_lddqu_si128( (__m128i const*)(filtered.data() + 16*b) );
+            __m128i v = _mm_load_si128( (__m128i const*)(filtered.data() + pre + 16*b) );
 
-            __m128i l0 = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
-            __m128i l1 = _mm_mullo_epi16( w1, l0 );
+            __m128i s0 = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
+            __m128i w0 = _mm_unpacklo_epi16( s0, _mm_setzero_si128() );
+            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w0 ) ) );
+            _tn = _mm_add_epi32( _tn, w0 );
 
-            __m128i h0 = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
-            __m128i h1 = _mm_mullo_epi16( w0, h0 );
+            __m128i w1 = _mm_unpackhi_epi16( s0, _mm_setzero_si128() );
+            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w1 ) ) );
+            _tn = _mm_add_epi32( _tn, w1 );
 
-            __m128i r = _mm_hadd_epi16( _mm_add_epi16( l1, h1 ),
-                                        _mm_add_epi16( l0, h0 ) );
-            r = _mm_hadd_epi16( r, _mm_setzero_si128() );
-            r = _mm_hadd_epi16( r, _mm_setzero_si128() );
+            __m128i s1 = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
+            __m128i w2 = _mm_unpacklo_epi16( s1, _mm_setzero_si128() );
+            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w2 ) ) );
+            _tn = _mm_add_epi32( _tn, w2 );
+            
+            __m128i w3 = _mm_unpackhi_epi16( s1, _mm_setzero_si128() );
+            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w3 ) ) );
+            _tn = _mm_add_epi32( _tn, w3 );
 
-            s2 = s2 + 16*s1 + ((unsigned short*)(&r))[0];
-            s1 = s1 + ((unsigned short*)(&r))[1];
 
-            // For each 256*16 = 4096th iteration we fix the modulo
-            if( b & 0xff == 0xff ) {
-                s2 = s2 % 65521;
-                s1 = s1 % 65521;
-            }
+            // _tw = tw % 65521; _tn = tn % 65521
+            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z6 ), Z6 ) );
+            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z5 ), Z5 ) );
+            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z4 ), Z4 ) );
+            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z3 ), Z3 ) );
+            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z2 ), Z2 ) );
 
+            _tn = _mm_sub_epi32( _tn,_mm_andnot_si128( _mm_cmplt_epi32( _tn, Z2 ), Z2 ) );
         }
-        for(int i=16*blocks; i<filtered.size(); i++ ) {
-            s1 = (s1 + filtered[i])%65521;
-            s2 = (s2 + s1)%65521;
+        // 4:1 reduction
+        _tw = _mm_hadd_epi32( _tw, _mm_setzero_si128() );
+        _tw = _mm_hadd_epi32( _tw, _mm_setzero_si128() );
+
+        _tn = _mm_hadd_epi32( _tn, _mm_setzero_si128() );
+        _tn = _mm_hadd_epi32( _tn, _mm_setzero_si128() );
+        
+        s2 = s2 + 16*blocks*s1 + _mm_cvtsi128_si32( _tw );
+        s1 = s1 + _mm_cvtsi128_si32( _tn );
+        for(int i=pre+16*blocks; i<filtered.size(); i++ ) {
+            s1 = s1 + filtered[i];
+            s2 = s2 + s1;
         }
-        adler = (s2 << 16) + s1;
+        adler = ((s2%65521) << 16) + (s1%65521);
     }
-#else
+#elif 0
     {
         unsigned int s1 = 1;
         unsigned int s2 = 0;
@@ -1020,9 +1050,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
         adler = (s2 << 16) + s1;
     }
-#endif
-
-    /*
+#else
     {
         unsigned int s1 = 1;
         unsigned int s2 = 0;
@@ -1032,9 +1060,10 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         }
         adler = (s2 << 16) + s1;
     }
-*/
+#endif
     
 
+    TimeStamp T2;
     
 
     // --- Find string duplicates and create code stream -----------------------
@@ -1096,6 +1125,8 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
             }
         }
     }
+
+    TimeStamp T3;
 
     // --- Encode using fixed Huffman codes ------------------------------------
     std::vector<unsigned char> IDAT(8);
@@ -1287,6 +1318,7 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
 
         pusher.pushBits( 0, 7 );    // EOB
     }
+    TimeStamp T4;
 
 
     
@@ -1311,7 +1343,11 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
     IDAT[dat_size+10] = ((crc)>>8)&0xffu;
     IDAT[dat_size+11] = ((crc)>>0)&0xffu;
 
+    TimeStamp T5;
+
     file.write( reinterpret_cast<char*>( IDAT.data() ), IDAT.size() );
+
+    TimeStamp T6;
 
 #if 1
     if( 1) {
@@ -1354,6 +1390,14 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
         
     }
 #endif
+
+    std::cerr << "filter=" << TimeStamp::delta( T0, T1 )
+              << ", adler32=" << TimeStamp::delta( T1, T2 )
+              << ", search=" << TimeStamp::delta( T2, T3 )
+              << ", huffenc=" << TimeStamp::delta( T3, T4 )
+              << ", crc32=" << TimeStamp::delta( T4, T5 )
+              << ", io=" << TimeStamp::delta( T5, T6 )
+              << ", total=" << TimeStamp::delta( T0, T6 ) << "\n";
     
 }
 
