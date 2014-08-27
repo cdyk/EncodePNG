@@ -8,14 +8,15 @@
 #include "tinia_png.hpp"
 #include "libjpeg_turbo_wrap.hpp"
 #include "homebrew_png.hpp"
-
+#include "ThreadPool.hpp"
 
 
 
 int
 main(int argc, char **argv)
 {
-    
+    ThreadPool thread_pool;
+
     for(int i=1; i<argc; i++) {
         std::string arg( argv[i] );
         if( arg.substr(0,2) == "--" ) {

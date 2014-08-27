@@ -6,6 +6,8 @@ FIND_PACKAGE( ZLIB REQUIRED )
 FIND_PACKAGE( PNG REQUIRED )
 FIND_LIBRARY( JPEG_TURBO_LIBRARIES NAMES jpeg )
 ADD_EXECUTABLE( main "main.cpp"
+                "ThreadPool.hpp"
+                "ThreadPool.cpp"
                 "tinia_png.hpp"
                 "tinia_png.cpp"
                 "timer.hpp"
