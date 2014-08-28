@@ -5,6 +5,47 @@
 #include <tmmintrin.h>
 
 unsigned int
+computeAdler32( unsigned char* data,
+                unsigned int N )
+{
+    unsigned int s1 = 1;
+    unsigned int s2 = 0;
+    for(unsigned int i=0; i<N; i++) {
+        s1 = (s1 + data[i])%65521;
+        s2 = (s2 + s1)%65521;
+    }
+    return (s2 << 16) + s1;
+}
+
+unsigned int
+computeAdler32Blocked( unsigned char* data,
+                       unsigned int N )
+{
+    unsigned int s1 = 1;
+    unsigned int s2 = 0;
+
+    int blocks = N/8;
+    for(int b=0; b<blocks; b++) {
+        unsigned int v0 = data[8*b+0];
+        unsigned int v1 = data[8*b+1];
+        unsigned int v2 = data[8*b+2];
+        unsigned int v3 = data[8*b+3];
+        unsigned int v4 = data[8*b+4];
+        unsigned int v5 = data[8*b+5];
+        unsigned int v6 = data[8*b+6];
+        unsigned int v7 = data[8*b+7];
+        s2 = (s2 + 8*(s1 + v0) + 7*v1 + 6*v2 + 5*v3 + 4*v4 + 3*v5 + 2*v6 + v7 )%65521;
+        s1 = (s1 + v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 )%65521;
+
+    }
+    for(unsigned int i=8*blocks; i<N; i++ ) {
+        s1 = (s1 + data[i])%65521;
+        s2 = (s2 + s1)%65521;
+    }
+    return (s2 << 16) + s1;
+}
+
+unsigned int
 computeAdler32SSE( unsigned char* data,
                    unsigned int N )
 {

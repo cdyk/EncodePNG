@@ -9,6 +9,7 @@
 #include <iostream>
 #include "ThreadPool.hpp"
 #include "BitPusher.hpp"
+#include "Adler32.hpp"
 
 static std::vector<unsigned long> crc_table;
 
@@ -900,110 +901,9 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     }
 
     TimeStamp T1;
-    
-#if 1
-    {
-        unsigned int s1 = 1;
-        unsigned int s2 = 0;
-        unsigned int pre = (0x10 - ((unsigned long long int)(filtered.data())&0xfu))&0xfu;
-        for(int i=0; i<pre; i++ ) {
-            s1 = s1 + filtered[i];
-            s2 = s2 + s1;
-        }
-        
-        int blocks = (filtered.size()-pre)/16;
-        __m128i Z0 = _mm_set_epi32( 1, 2, 3, 4 );
-        __m128i Z1 = _mm_set1_epi32( 4 );
-        __m128i Z2 = _mm_set1_epi32( 65521 );
-        __m128i Z3 = _mm_set1_epi32( 2*65521 );
-        __m128i Z4 = _mm_set1_epi32( 4*65521 );
-        __m128i Z5 = _mm_set1_epi32( 8*65521 );
-        __m128i Z6 = _mm_set1_epi32( 16*65521 );
-        __m128i _tw = _mm_setzero_si128();
-        __m128i _tn = _mm_setzero_si128();        
-        for(int b=0; b<blocks; b++) {
-            __m128i v = _mm_load_si128( (__m128i const*)(filtered.data() + pre + 16*b) );
-
-            __m128i s0 = _mm_unpacklo_epi8( v, _mm_setzero_si128() );
-            __m128i w0 = _mm_unpacklo_epi16( s0, _mm_setzero_si128() );
-            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w0 ) ) );
-            _tn = _mm_add_epi32( _tn, w0 );
-
-            __m128i w1 = _mm_unpackhi_epi16( s0, _mm_setzero_si128() );
-            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w1 ) ) );
-            _tn = _mm_add_epi32( _tn, w1 );
-
-            __m128i s1 = _mm_unpackhi_epi8( v, _mm_setzero_si128() );
-            __m128i w2 = _mm_unpacklo_epi16( s1, _mm_setzero_si128() );
-            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w2 ) ) );
-            _tn = _mm_add_epi32( _tn, w2 );
-            
-            __m128i w3 = _mm_unpackhi_epi16( s1, _mm_setzero_si128() );
-            _tw = _mm_add_epi32( _mm_mullo_epi32( Z1, _tn ), _mm_add_epi32( _tw, _mm_mullo_epi32( Z0, w3 ) ) );
-            _tn = _mm_add_epi32( _tn, w3 );
-
-
-            // _tw = tw % 65521; _tn = tn % 65521
-            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z6 ), Z6 ) );
-            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z5 ), Z5 ) );
-            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z4 ), Z4 ) );
-            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z3 ), Z3 ) );
-            _tw = _mm_sub_epi32( _tw,_mm_andnot_si128( _mm_cmplt_epi32( _tw, Z2 ), Z2 ) );
-
-            _tn = _mm_sub_epi32( _tn,_mm_andnot_si128( _mm_cmplt_epi32( _tn, Z2 ), Z2 ) );
-        }
-        // 4:1 reduction
-        _tw = _mm_hadd_epi32( _tw, _mm_setzero_si128() );
-        _tw = _mm_hadd_epi32( _tw, _mm_setzero_si128() );
-
-        _tn = _mm_hadd_epi32( _tn, _mm_setzero_si128() );
-        _tn = _mm_hadd_epi32( _tn, _mm_setzero_si128() );
-        
-        s2 = s2 + 16*blocks*s1 + _mm_cvtsi128_si32( _tw );
-        s1 = s1 + _mm_cvtsi128_si32( _tn );
-        for(int i=pre+16*blocks; i<filtered.size(); i++ ) {
-            s1 = s1 + filtered[i];
-            s2 = s2 + s1;
-        }
-        adler = ((s2%65521) << 16) + (s1%65521);
-    }
-#elif 0
-    {
-        unsigned int s1 = 1;
-        unsigned int s2 = 0;
-
-        int blocks = filtered.size()/8;
-        for(int b=0; b<blocks; b++) {
-            unsigned int v0 = filtered[8*b+0];
-            unsigned int v1 = filtered[8*b+1];
-            unsigned int v2 = filtered[8*b+2];
-            unsigned int v3 = filtered[8*b+3];
-            unsigned int v4 = filtered[8*b+4];
-            unsigned int v5 = filtered[8*b+5];
-            unsigned int v6 = filtered[8*b+6];
-            unsigned int v7 = filtered[8*b+7];
-            s2 = (s2 + 8*(s1 + v0) + 7*v1 + 6*v2 + 5*v3 + 4*v4 + 3*v5 + 2*v6 + v7 )%65521;
-            s1 = (s1 + v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 )%65521;
-
-        }
-        for(int i=8*blocks; i<filtered.size(); i++ ) {
-            s1 = (s1 + filtered[i])%65521;
-            s2 = (s2 + s1)%65521;
-        }
-        adler = (s2 << 16) + s1;
-    }
-#else
-    {
-        unsigned int s1 = 1;
-        unsigned int s2 = 0;
-        for(int i=0; i<filtered.size(); i++) {
-            s1 = (s1 + filtered[i])%65521;
-            s2 = (s2 + s1)%65521;
-        }
-        adler = (s2 << 16) + s1;
-    }
-#endif
-    
+    //adler = computeAdler32( filtered.data(), filtered.size() );
+    //adler = computeAdler32Blocked( filtered.data(), filtered.size() );
+    adler = computeAdler32SSE( filtered.data(), filtered.size() );
 
     TimeStamp T2;
     
