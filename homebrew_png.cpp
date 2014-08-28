@@ -10,6 +10,9 @@
 #include "ThreadPool.hpp"
 #include "BitPusher.hpp"
 #include "Adler32.hpp"
+#include "LZEncoder.hpp"
+#include "HuffEncode.hpp"
+#include "ScanlineFilter.hpp"
 
 static std::vector<unsigned long> crc_table;
 
@@ -834,7 +837,12 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     TimeStamp T0;
     
     unsigned int adler;// = (s2<<16) + s1;
-    std::vector<unsigned char> filtered( (3*WIDTH+1)*HEIGHT );
+    
+    unsigned int filtered_size = (3*WIDTH+1)*HEIGHT;
+    unsigned char* filtered = (unsigned char*)malloc( sizeof(unsigned char)*filtered_size );
+    
+    filterScanlines( filtered, (unsigned char*)(img.data()), WIDTH, HEIGHT );
+#if 0    
     if(0) {
         //  Number of 16-byte fetches per scanline
         int blocks = 3*WIDTH/16;
@@ -845,7 +853,7 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
                                        _mm_set1_epi8( 3*WIDTH-16*blocks ) );
         {
             const unsigned char* in = (unsigned char*)(img.data());
-            unsigned char* out = filtered.data();
+            unsigned char* out = filtered;
             *out++ = 0;
             for(int b=0; b<blocks; b++ ) {
                 _mm_storeu_si128( (__m128i*)out, _mm_lddqu_si128( (__m128i const*)in ) );
@@ -857,7 +865,7 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
 
         for( int j=1; j<HEIGHT; j++ ) {
             const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*(j-1);
-            unsigned char* out = filtered.data() + (3*WIDTH+1)*j;
+            unsigned char* out = filtered + (3*WIDTH+1)*j;
             *out++ = 2;
             for(int b=0; b<blocks; b++ ) {
                 __m128i _t0 = _mm_lddqu_si128( (__m128i const*)in );
@@ -877,7 +885,7 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     else {
         for( int j=0; j<HEIGHT; j++) {
             const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*j;
-            unsigned char* out = filtered.data() + (3*WIDTH+1)*j;
+            unsigned char* out = filtered + (3*WIDTH+1)*j;
             *out++ = 1;       // Filter type 1 (diff with left);
 
             unsigned int p0 = 0;
@@ -899,58 +907,19 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
             }
         }
     }
-
+#endif
     TimeStamp T1;
     //adler = computeAdler32( filtered.data(), filtered.size() );
     //adler = computeAdler32Blocked( filtered.data(), filtered.size() );
-    adler = computeAdler32SSE( filtered.data(), filtered.size() );
+    adler = computeAdler32SSE( filtered, filtered_size );
 
     TimeStamp T2;
     
 
     // --- Find string duplicates and create code stream -----------------------
-    std::vector<unsigned int> codestream;
-    codestream.reserve( filtered.size() );
-    {
-        std::vector<int> head(256, -0xfffff);
-        std::vector<int> next( 0x10000, -0xfffff );
-
-        int N = filtered.size();
-        int i=0;
-        while( i < N ) {
-            unsigned int h = (13*(13*filtered[i] + filtered[i+1])+filtered[i+2])&0xffu;
-            int j = head[h];
-            next[ i & 0x7fff ] = j;
-            head[h] = i;
-            int b_l = 0;
-            int b_j = 0;
-            for( int k=0; k<10 && (i-j <= 0x7fff); k++ ) {
-                int l = lengthOfMatch( filtered.data() + j,
-                                       filtered.data() + i,
-                                       std::min( std::min( 258, N-i), i-j ) );
-
-                if( l > b_l ) {
-                    b_l = l;
-                    b_j = j;
-                    if( b_l == 258 ) {
-                        break;// we can't get a longer match.
-                    }
-                }
-                j = next[ j & 0x7fff ];
-            }
-            if( b_l < 3 ) {
-                 // No matches found, emit literal
-                codestream.push_back( 0x80000000u | filtered[i] );
-                i++;
-            }
-            else {
-                // emit length-distance pair
-                codestream.push_back( ((unsigned int)b_l << 16u) | (i - b_j) );
-                i = i + b_l;
-            }
-        }
-    }
-
+    unsigned int* codestream = (unsigned int*)malloc(sizeof(unsigned int)*filtered_size );
+    unsigned int M = encodeLZ( codestream, filtered, filtered_size );
+    
     TimeStamp T3;
 
     // --- Encode using fixed Huffman codes ------------------------------------
@@ -962,139 +931,11 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     IDAT[7] = 'T';
 
     // --- create deflate chunk ------------------------------------------------
-    IDAT.push_back(  8 + (7<<4) );  // CM=8=deflate, CINFO=7=32K window size = 112
-    IDAT.push_back( 94 /* 28*/ );           // FLG
-    {
-        BitPusher pusher( IDAT );
-        pusher.pushBits( 1, 1 );    // BFINAL
-        pusher.pushBits( 1, 2 );    // BTYPE (=01)
 
-        for(auto it=codestream.begin(); it!=codestream.end(); ++it ) {
-            unsigned int code = *it;
+    unsigned int* code_stream_p[1] = { codestream };
+    unsigned int  code_stream_N[1] = { M /*codestream.size()*/ };
+    encodeHuffman( IDAT, code_stream_p, code_stream_N, 1 );
 
-            // --- Literal value -----------------------------------------------
-            // max 9 bits
-            if( code&0x80000000u ) {
-                code = code&0xffu;
-                if( code < 144 ) {
-                    pusher.pushBitsReverse( code + 48, 8 );
-                }
-                else {
-                    pusher.pushBitsReverse( code + (400-144), 9 );
-                }
-            }
-
-            // --- Length-distance pair ----------------------------------------
-            else {
-                unsigned int length   = code >> 16u;
-                unsigned int distance = code & 0xffffu;
-
-                // --- 7-bit length Huffman code -------------------------------
-                if( length < 115 ) {    // 7-bit length Huffman code
-                    unsigned int length_code, length_bits, length_bits_n;
-
-                    if( length < 11 ) {
-                        length_code     = length-2;
-                        length_bits     = 0;
-                        length_bits_n   = 0;
-                    }
-                    else if(length < 19 ) {
-                        length_code     = ((length-11)>>1)+9;
-                        length_bits     = (length-11)&0x1;
-                        length_bits_n   = 1;
-                    }
-                    else if(length < 35 ) {
-                        length_code     = ((length-19)>>2)+13;
-                        length_bits     = (length-19)&0x3;
-                        length_bits_n   = 2;
-                    }
-                    else if(length < 67 ) {
-                        length_code     = ((length-35)>>3)+(273-256);
-                        length_bits     = (length-35)&0x7;
-                        length_bits_n   = 3;
-                    }
-                    else {  // length < 131
-                        length_code     = ((length-67)>>4)+(277-256);
-                        length_bits     = (length-67)&0xf;
-                        length_bits_n   = 4;
-                    }
-                    length_code = ((length_code&0x55u)<<1u) | ((length_code>>1u)&0x55u);
-                    length_code = ((length_code&0x33u)<<2u) | ((length_code>>2u)&0x33u);
-                    length_code = ((length_code&0x0fu)<<4u) | ((length_code>>4u)&0x0fu);
-                    length_code = (length_code>>1);
-                    length_code = length_code | (length_bits<<7);
-                    pusher.pushBits( length_code, 7 + length_bits_n );
-                }
-                else if( length < 258 ) {                  // 8-bit length Huffman code
-                    unsigned int length_code, length_bits, length_bits_n;
-
-                    if( length < 131 ) {
-                        length_code     = 192;
-                        length_bits     = (length-115)&0xf;
-                        length_bits_n   = 4;
-                    }
-                    else if( length < 258 ) {
-                        length_code     = ((length-131)>>5)+(281-280+192);
-                        length_bits     = (length-131)&0x1f;
-                        length_bits_n   = 5;
-                    }
-                    else {
-                        length_code     = (285-280+192);
-                        length_bits     = 0;
-                        length_bits_n   = 0;
-                   }
-
-                    length_code = ((length_code&0x55u)<<1u) | ((length_code>>1u)&0x55u);
-                    length_code = ((length_code&0x33u)<<2u) | ((length_code>>2u)&0x33u);
-                    length_code = ((length_code&0x0fu)<<4u) | ((length_code>>4u)&0x0fu);
-                    length_code = length_code | (length_bits<<8);
-                    pusher.pushBits( length_code, 8 + length_bits_n );
-
-                }
-                else {
-
-                    pusher.pushBits( 163, 8 );  // = 197 reversed.
-                }
-
-                // --- Encode distance Huffman codes ---------------------------
-
-                if( distance < 5 ) {
-                    unsigned int distance_code;
-                    distance_code   = distance-1;   // 
-                    
-                    distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
-                    distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
-                    distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
-                    pusher.pushBits( distance_code, 5u );
-                }
-                else {
-                    unsigned int distance_code = 0;
-                    unsigned int distance_bits = 0;
-                    unsigned int distance_bits_n = 0;
-
-                    for(unsigned int i=1; i<14u; i++ ) {
-                        if( distance < ((4u<<i)+1u) ) {
-                            distance_code   = ((distance - ((4<<(i-1))+1))>>i) + (2+2*i);
-                            distance_bits   = (distance - ((4<<(i-1))+1)) & ((1<<i)-1);
-                            distance_bits_n = i;
-                            break;
-                        }
-                    }
-                    
-                    distance_code = ((distance_code&0x55u)<<1u) | ((distance_code>>1u)&0x55u);
-                    distance_code = ((distance_code&0x33u)<<2u) | ((distance_code>>2u)&0x33u);
-                    distance_code = ((distance_code&0x0Fu)<<1u) | ((distance_code>>7u)&0x01u);
-                    
-                    distance_code = distance_code | (distance_bits<<5u);
-                    pusher.pushBits( distance_code, 5u + distance_bits_n );
-                }
-
-            }
-        }
-
-
-        pusher.pushBits( 0, 7 );    // EOB
-    }
     TimeStamp T4;
 
 
