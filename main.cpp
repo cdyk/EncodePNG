@@ -172,19 +172,23 @@ main(int argc, char **argv)
                 TimeStamp start;
                 int bytes = homebrew_png2( image, w, h );
                 TimeStamp stop;
-                std::cerr << "homebrew_wrap2:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
+                std::cerr << "homebrew2:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }
             {
                 TimeStamp start;
                 int bytes = homebrew_png3( image, w, h );
                 TimeStamp stop;
-                std::cerr << "homebrew_wrap3:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
+                std::cerr << "homebrew3:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }
             {
-                TimeStamp start;
+                std::cerr << "homebrew4:\t";
                 int bytes = homebrew_png4( &thread_pool, image, w, h );
-                TimeStamp stop;
-                std::cerr << "homebrew_wrap4:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
+                std::cerr << " ("<< bytes << " bytes)\n";
+            }
+            {
+                std::cerr << "homebrew4_mc:\t";
+                int bytes = homebrew_png4_mc( &thread_pool, image, w, h );
+                std::cerr << " ("<< bytes << " bytes)\n";
             }
 
             {

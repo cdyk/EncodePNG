@@ -14,7 +14,7 @@
 #include "HuffEncode.hpp"
 #include "ScanlineFilter.hpp"
 
-#define PARALLEL
+//#define PARALLEL
 
 static std::vector<unsigned long> crc_table;
 
@@ -917,8 +917,9 @@ protected:
 };
 
 
+
 void
-writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
+writeIDAT4MC( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
     int T = (thread_pool->workers()+1);
 
@@ -929,7 +930,6 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     unsigned char* filtered = (unsigned char*)malloc( sizeof(unsigned char)*filtered_size );
     unsigned int* codestream = (unsigned int*)malloc(sizeof(unsigned int)*filtered_size );
 
-#ifdef PARALLEL
     CompletionToken tokenA, tokenB;
 
     unsigned int* _codestream_p[ T ];
@@ -966,7 +966,99 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     TimeStamp T2;
 
 
-#else
+    TimeStamp T4;
+
+
+    IDAT.push_back( ((adler)>>24)&0xffu ); // Adler32
+    IDAT.push_back( ((adler)>>16)&0xffu );
+    IDAT.push_back( ((adler)>> 8)&0xffu );
+    IDAT.push_back( ((adler)>> 0)&0xffu );
+
+    // --- end deflate chunk --------------------------------------------------
+
+    // Update PNG chunk content size for IDAT
+    int dat_size = IDAT.size()-8u;
+    IDAT[0] = ((dat_size)>>24)&0xffu;
+    IDAT[1] = ((dat_size)>>16)&0xffu;
+    IDAT[2] = ((dat_size)>>8)&0xffu;
+    IDAT[3] = ((dat_size)>>0)&0xffu;
+
+    unsigned long crc = CRC( crc_table, IDAT.data()+4, dat_size+4 );
+    IDAT.resize( IDAT.size()+4u );  // make room for CRC
+    IDAT[dat_size+8]  = ((crc)>>24)&0xffu;
+    IDAT[dat_size+9]  = ((crc)>>16)&0xffu;
+    IDAT[dat_size+10] = ((crc)>>8)&0xffu;
+    IDAT[dat_size+11] = ((crc)>>0)&0xffu;
+
+    TimeStamp T5;
+
+    file.write( reinterpret_cast<char*>( IDAT.data() ), IDAT.size() );
+
+    TimeStamp T6;
+
+#if 1
+    if( 1) {
+        std::vector<unsigned char> quux(10*1024*1024);
+
+        z_stream stream;
+        int err;
+
+        stream.next_in = (z_const Bytef *)IDAT.data()+8;
+        stream.avail_in = (uInt)IDAT.size()-8;
+        stream.next_out = quux.data();
+        stream.avail_out = quux.size();
+        stream.zalloc = (alloc_func)0;
+        stream.zfree = (free_func)0;
+
+        err = inflateInit(&stream);
+        if (err != Z_OK) {
+            std::cerr << "inflateInit failed: " << err << "\n";
+            abort();
+        }
+
+        err = inflate(&stream, Z_FINISH);
+
+        if( stream.msg != NULL ) {
+            std::cerr << stream.msg << "\n";
+        }
+
+
+        uLongf quux_size = quux.size();
+        err = uncompress( quux.data(), &quux_size, IDAT.data() + 8, IDAT.size() - 8 );
+        if( err != Z_OK ) {
+            std::cerr << "uncompress="
+                      << err
+                      << "\n";
+        }
+        if( quux_size != ((3*WIDTH+1)*HEIGHT) ) {
+            std::cerr << "uncompress_size="  << quux_size
+                      << ", should be=" << ((3*WIDTH+1)*HEIGHT) << "\n";
+        }
+
+    }
+#endif
+
+    std::cerr << "filter+LZenc=" << TimeStamp::delta( T0, T1 )
+              << ", adler32+huffenc=" << TimeStamp::delta( T1, T2 )
+              << ", crc32=" << TimeStamp::delta( T4, T5 )
+              << ", io=" << TimeStamp::delta( T5, T6 )
+              << ", total=" << TimeStamp::delta( T0, T6 );
+}
+
+
+
+void
+writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
+{
+    int T = (thread_pool->workers()+1);
+
+
+    TimeStamp T0;
+    unsigned int adler;
+    unsigned int filtered_size = (3*WIDTH+1)*HEIGHT;
+    unsigned char* filtered = (unsigned char*)malloc( sizeof(unsigned char)*filtered_size );
+    unsigned int* codestream = (unsigned int*)malloc(sizeof(unsigned int)*filtered_size );
+
     filterScanlines( filtered, (unsigned char*)(img.data()), WIDTH, HEIGHT );
 
 
@@ -996,7 +1088,6 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     unsigned int  code_stream_N[1] = { M /*codestream.size()*/ };
     encodeHuffman( IDAT, code_stream_p, code_stream_N, 1 );
 
-#endif
     TimeStamp T4;
 
     
@@ -1069,22 +1160,14 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     }
 #endif
 
-#ifdef PARALLEL
-    std::cerr << "filter+LZenc=" << TimeStamp::delta( T0, T1 )
-              << ", adler32+huffenc=" << TimeStamp::delta( T1, T2 )
-              << ", crc32=" << TimeStamp::delta( T4, T5 )
-              << ", io=" << TimeStamp::delta( T5, T6 )
-              << ", total=" << TimeStamp::delta( T0, T6 ) << "\n";
-#else
     std::cerr << "filter=" << TimeStamp::delta( T0, T1 )
               << ", adler32=" << TimeStamp::delta( T1, T2 )
               << ", LZenc=" << TimeStamp::delta( T2, T3 )
               << ", huffenc=" << TimeStamp::delta( T3, T4 )
               << ", crc32=" << TimeStamp::delta( T4, T5 )
               << ", io=" << TimeStamp::delta( T5, T6 )
-              << ", total=" << TimeStamp::delta( T0, T6 ) << "\n";
+              << ", total=" << TimeStamp::delta( T0, T6 );
 
-#endif
 }
 
 
@@ -1147,6 +1230,22 @@ homebrew_png4(ThreadPool *thread_pool, const std::vector<char> &rgb,
     writeSignature( png );
     writeIHDR( png, crc_table, w, h );
     writeIDAT4( thread_pool, png, rgb, crc_table, w, h );
+    writeIEND( png, crc_table );
+
+    int bytes = png.tellp();
+    png.close();
+
+    return bytes;
+}
+int
+homebrew_png4_mc(ThreadPool *thread_pool, const std::vector<char> &rgb,
+              const int w,
+              const int h )
+{
+    std::ofstream png( "homebrew4.png" );
+    writeSignature( png );
+    writeIHDR( png, crc_table, w, h );
+    writeIDAT4MC( thread_pool, png, rgb, crc_table, w, h );
     writeIEND( png, crc_table );
 
     int bytes = png.tellp();
