@@ -2,7 +2,9 @@
 #include <string>
 #include <cstdio>
 #include <iostream>
+#include <sys/types.h>
 #include <vector>
+#include <unistd.h>
 #include <cstring>
 #include "timer.hpp"
 #include "tinia_png.hpp"
@@ -11,12 +13,34 @@
 #include "ThreadPool.hpp"
 
 
+class DummyJob
+        : public JobInterface
+{
+public:
+    DummyJob( int seconds )
+        : m_seconds( seconds )
+    {
+    }    
+
+    void
+    run()
+    {
+        std::cerr << pthread_self() << ": Sleeping for " << m_seconds  << "\n";
+        sleep( m_seconds );
+        std::cerr << pthread_self() << ": Done.\n";
+    }
+    
+protected:
+    int m_seconds;
+};
+
 
 int
 main(int argc, char **argv)
 {
     ThreadPool thread_pool;
 
+    
     for(int i=1; i<argc; i++) {
         std::string arg( argv[i] );
         if( arg.substr(0,2) == "--" ) {
@@ -158,7 +182,7 @@ main(int argc, char **argv)
             }
             {
                 TimeStamp start;
-                int bytes = homebrew_png4( image, w, h );
+                int bytes = homebrew_png4( &thread_pool, image, w, h );
                 TimeStamp stop;
                 std::cerr << "homebrew_wrap4:\t" << TimeStamp::delta( start, stop ) << " ("<< bytes << " bytes)\n";
             }

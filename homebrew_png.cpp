@@ -7,6 +7,8 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
+#include "ThreadPool.hpp"
+#include "BitPusher.hpp"
 
 static std::vector<unsigned long> crc_table;
 
@@ -38,67 +40,6 @@ writeSignature( std::ofstream& file )
     file.write( reinterpret_cast<char*>( signature ), sizeof(signature ) );    
 }
 
-class BitPusher
-{
-public:
-    BitPusher( std::vector<unsigned char>& data )
-        : m_data( data ),
-          m_pending_data(0u),
-          m_pending_count(0u)
-    {}
-    
-    ~BitPusher()
-    {
-        while( m_pending_count >= 8u ) {
-            m_data.push_back( m_pending_data );
-            m_pending_data = m_pending_data >> 8u;
-            m_pending_count -= 8u;
-        }
-        if( m_pending_count ) {
-            m_data.push_back( m_pending_data );
-        }
-    }
-    
-    void
-    pushBits( unsigned long long int bits, unsigned int count )
-    {
-        m_pending_data = m_pending_data | (bits << m_pending_count);
-        m_pending_count += count;
-        while( m_pending_count >= 8u ) {
-            m_data.push_back( m_pending_data );
-            m_pending_data = m_pending_data >> 8u;
-            m_pending_count -= 8u;
-        }
-    }
-
-    void
-    pushBitsReverse( unsigned long long int bits, unsigned int count )
-    {
-        //std::cerr << "pushing " << count << " bits:\t";
-        //for(int i=0; i<count; i++) {
-        //     std::cerr << ((bits>>(count-i-1))&1);
-        //}
-        //std::cerr << "\n";
-        
-        bits = bits << (64-count);
-        bits = ((bits & 0x5555555555555555ull)<<1)  | ((bits>> 1) & 0x5555555555555555ull);
-        bits = ((bits & 0x3333333333333333ull)<<2)  | ((bits>> 2) & 0x3333333333333333ull);
-        bits = ((bits & 0x0F0F0F0F0F0F0F0Full)<<4)  | ((bits>> 4) & 0x0F0F0F0F0F0F0F0Full);
-        bits = ((bits & 0x00FF00FF00FF00FFull)<<8)  | ((bits>> 8) & 0x00FF00FF00FF00FFull);
-        bits = ((bits & 0x0000FFFF0000FFFFull)<<16) | ((bits>>16) & 0x0000FFFF0000FFFFull);
-        bits = ((bits & 0x00000000FFFFFFFFull)<<32) | ((bits>>32) & 0x00000000FFFFFFFFull);
-        pushBits( bits, count );
-    }
-    
-    
-protected:
-    std::vector<unsigned char>& m_data;
-    unsigned long long int      m_pending_data;
-    unsigned int                m_pending_count;
-    
-    
-};
-        
 
 void
 encodeCount( unsigned int& bits, unsigned int& bits_n, unsigned int count )
@@ -885,8 +826,9 @@ lengthOfMatch( const unsigned char* a,
 }
 
 
+
 void
-writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
+writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
     TimeStamp T0;
     
@@ -1226,10 +1168,12 @@ writeIDAT4( std::ofstream& file, const std::vector<char>& img, const std::vector
                     pusher.pushBits( distance_code, 5u );
                 }
                 else {
-                    unsigned int distance_code, distance_bits, distance_bits_n;
+                    unsigned int distance_code = 0;
+                    unsigned int distance_bits = 0;
+                    unsigned int distance_bits_n = 0;
 
-                    for(int i=1; i<14; i++ ) {
-                        if( distance < ((4<<i)+1) ) {
+                    for(unsigned int i=1; i<14u; i++ ) {
+                        if( distance < ((4u<<i)+1u) ) {
                             distance_code   = ((distance - ((4<<(i-1))+1))>>i) + (2+2*i);
                             distance_bits   = (distance - ((4<<(i-1))+1)) & ((1<<i)-1);
                             distance_bits_n = i;
@@ -1386,14 +1330,14 @@ homebrew_png3( const std::vector<char> &rgb,
 }
 
 int
-homebrew_png4( const std::vector<char> &rgb,
+homebrew_png4(ThreadPool *thread_pool, const std::vector<char> &rgb,
               const int w,
               const int h )
 {
     std::ofstream png( "homebrew4.png" );
     writeSignature( png );
     writeIHDR( png, crc_table, w, h );
-    writeIDAT4( png, rgb, crc_table, w, h );
+    writeIDAT4( thread_pool, png, rgb, crc_table, w, h );
     writeIEND( png, crc_table );
 
     int bytes = png.tellp();

@@ -45,7 +45,7 @@ public:
     wait( CompletionToken* );
 
 protected:
-    typedef std::tuple<JobInterface*, CompletionToken*> Job;
+    typedef std::pair<JobInterface*, CompletionToken*> Job;
 
     bool                    m_done;
     pthread_mutex_t         m_mutex;
