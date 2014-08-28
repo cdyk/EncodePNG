@@ -38,7 +38,7 @@ protected:
 int
 main(int argc, char **argv)
 {
-    ThreadPool thread_pool;
+    ThreadPool thread_pool(7);
 
     
     for(int i=1; i<argc; i++) {

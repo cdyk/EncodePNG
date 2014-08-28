@@ -44,6 +44,9 @@ public:
     void
     wait( CompletionToken* );
 
+    int
+    workers() const { return m_workers.size(); }
+
 protected:
     typedef std::pair<JobInterface*, CompletionToken*> Job;
 

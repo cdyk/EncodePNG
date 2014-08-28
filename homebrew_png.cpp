@@ -14,6 +14,8 @@
 #include "HuffEncode.hpp"
 #include "ScanlineFilter.hpp"
 
+#define PARALLEL
+
 static std::vector<unsigned long> crc_table;
 
 void
@@ -831,83 +833,143 @@ lengthOfMatch( const unsigned char* a,
 
 
 
+class IDAT4Worker : public JobInterface
+{
+public:
+    IDAT4Worker( unsigned int* code_stream_p,
+                 unsigned int* code_stream_n,
+                 unsigned char* filtered,
+                 unsigned char* image,
+                 unsigned int width,
+                 unsigned int height )
+        : m_code_stream_p( code_stream_p ),
+          m_code_stream_n( code_stream_n ),
+          m_filtered( filtered ),
+          m_image( image ),
+          m_width( width ),
+          m_height( height )
+    {}
+
+    void
+    run()
+    {
+        filterScanlines( m_filtered, m_image, m_width, m_height );
+        *m_code_stream_n = encodeLZ( m_code_stream_p, m_filtered, (3*m_width+1)*m_height );
+    }
+
+protected:
+    unsigned int*   m_code_stream_p;
+    unsigned int*   m_code_stream_n;
+    unsigned char*  m_filtered;
+    unsigned char*  m_image;
+    unsigned int    m_width;
+    unsigned int    m_height;
+
+};
+
+class Adler32Job : public JobInterface
+{
+public:
+    Adler32Job( unsigned int* adler32,
+                unsigned char* data,
+                unsigned int N )
+        : m_adler32( adler32 ),
+          m_data( data ),
+          m_N( N )
+    {}
+
+    void
+    run()
+    {
+        *m_adler32 = computeAdler32SSE( m_data, m_N );
+    }
+
+protected:
+    unsigned int*   m_adler32;
+    unsigned char*  m_data;
+    unsigned int    m_N;
+};
+
+class HuffCodeJob : public JobInterface
+{
+public:
+    HuffCodeJob( std::vector<unsigned char>& output,
+                 unsigned int** code_stream_p,
+                 unsigned int*  code_stream_N,
+                 unsigned int   code_streams )
+        : m_output( output ),
+          m_code_stream_p( code_stream_p ),
+          m_code_stream_N( code_stream_N ),
+          m_code_streams( code_streams )
+    {}
+
+    void
+    run()
+    {
+        encodeHuffman( m_output, m_code_stream_p, m_code_stream_N, m_code_streams );
+    }
+
+protected:
+    std::vector<unsigned char>& m_output;
+    unsigned int** m_code_stream_p;
+    unsigned int*  m_code_stream_N;
+    unsigned int   m_code_streams;
+};
+
+
 void
 writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char>& img, const std::vector<unsigned long>& crc_table, int WIDTH, int HEIGHT  )
 {
+    int T = (thread_pool->workers()+1);
+
+
     TimeStamp T0;
-    
-    unsigned int adler;// = (s2<<16) + s1;
-    
+    unsigned int adler;
     unsigned int filtered_size = (3*WIDTH+1)*HEIGHT;
     unsigned char* filtered = (unsigned char*)malloc( sizeof(unsigned char)*filtered_size );
-    
+    unsigned int* codestream = (unsigned int*)malloc(sizeof(unsigned int)*filtered_size );
+
+#ifdef PARALLEL
+    CompletionToken tokenA, tokenB;
+
+    unsigned int* _codestream_p[ T ];
+    unsigned int  _codestream_n[ T ];
+    for( int t=0; t<T; t++ ) {
+        int a = (t*HEIGHT)/T;
+        int b = ((t+1)*HEIGHT)/T;
+
+
+        _codestream_p[ t ] = codestream + (3*WIDTH+1)*a;
+        _codestream_n[ t ] = 0;
+
+        thread_pool->addJob( new IDAT4Worker( _codestream_p[ t ],
+                                              _codestream_n + t,
+                                              filtered + (3*WIDTH+1)*a,
+                                              (unsigned char*)(img.data()) + 3*WIDTH*a,
+                                              WIDTH, b-a ),
+                             &tokenA );
+    }
+    thread_pool->wait( &tokenA );
+    TimeStamp T1;
+    thread_pool->addJob( new Adler32Job( &adler, filtered, filtered_size ),
+                         &tokenB );
+
+    std::vector<unsigned char> IDAT(8);
+    IDAT[4] = 'I';
+    IDAT[5] = 'D';
+    IDAT[6] = 'A';
+    IDAT[7] = 'T';
+    thread_pool->addJob( new HuffCodeJob( IDAT, _codestream_p, _codestream_n, T ),
+                         &tokenB );
+
+    thread_pool->wait( &tokenB );
+    TimeStamp T2;
+
+
+#else
     filterScanlines( filtered, (unsigned char*)(img.data()), WIDTH, HEIGHT );
-#if 0    
-    if(0) {
-        //  Number of 16-byte fetches per scanline
-        int blocks = 3*WIDTH/16;
 
-        // Create move-mask for last block of each scanline
-        __m128i mask = _mm_cmplt_epi8( _mm_set_epi8( 15, 14, 13, 12, 11, 10, 9, 8,
-                                                      7,  6,  5,  4,  3,  2, 1, 0 ),
-                                       _mm_set1_epi8( 3*WIDTH-16*blocks ) );
-        {
-            const unsigned char* in = (unsigned char*)(img.data());
-            unsigned char* out = filtered;
-            *out++ = 0;
-            for(int b=0; b<blocks; b++ ) {
-                _mm_storeu_si128( (__m128i*)out, _mm_lddqu_si128( (__m128i const*)in ) );
-                in += 16;
-                out += 16;
-            }
-            _mm_maskmoveu_si128( _mm_lddqu_si128( (__m128i const*)in ), mask, (char*)out );
-        }
 
-        for( int j=1; j<HEIGHT; j++ ) {
-            const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*(j-1);
-            unsigned char* out = filtered + (3*WIDTH+1)*j;
-            *out++ = 2;
-            for(int b=0; b<blocks; b++ ) {
-                __m128i _t0 = _mm_lddqu_si128( (__m128i const*)in );
-                __m128i _t1 = _mm_lddqu_si128( (__m128i const*)(in + 3*WIDTH ) );
-
-                _mm_storeu_si128( (__m128i*)out,
-                                  _mm_sub_epi8( _t1, _t0 ) );
-                in += 16;
-                out += 16;
-            }
-            _mm_maskmoveu_si128( _mm_lddqu_si128( (__m128i const*)in ),
-                                 mask,
-                                 (char*)out );
-
-        }
-    }
-    else {
-        for( int j=0; j<HEIGHT; j++) {
-            const unsigned char* in = (unsigned char*)(img.data()) + 3*WIDTH*j;
-            unsigned char* out = filtered + (3*WIDTH+1)*j;
-            *out++ = 1;       // Filter type 1 (diff with left);
-
-            unsigned int p0 = 0;
-            unsigned int p1 = 0;
-            unsigned int p2 = 0;
-            for( int i=0; i<WIDTH; i++ ) {
-                unsigned int c0 = *in++;
-                unsigned int c1 = *in++;
-                unsigned int c2 = *in++;
-                unsigned int v0 = (c0 - p0) & 0xffu;
-                unsigned int v1 = (c1 - p1) & 0xffu;
-                unsigned int v2 = (c2 - p2) & 0xffu;
-                p0 = c0;
-                p1 = c1;
-                p2 = c2;
-                *out++ = v0;
-                *out++ = v1;
-                *out++ = v2;
-            }
-        }
-    }
-#endif
     TimeStamp T1;
     //adler = computeAdler32( filtered.data(), filtered.size() );
     //adler = computeAdler32Blocked( filtered.data(), filtered.size() );
@@ -917,9 +979,7 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     
 
     // --- Find string duplicates and create code stream -----------------------
-    unsigned int* codestream = (unsigned int*)malloc(sizeof(unsigned int)*filtered_size );
     unsigned int M = encodeLZ( codestream, filtered, filtered_size );
-    
     TimeStamp T3;
 
     // --- Encode using fixed Huffman codes ------------------------------------
@@ -936,8 +996,8 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     unsigned int  code_stream_N[1] = { M /*codestream.size()*/ };
     encodeHuffman( IDAT, code_stream_p, code_stream_N, 1 );
 
+#endif
     TimeStamp T4;
-
 
     
     IDAT.push_back( ((adler)>>24)&0xffu ); // Adler32
@@ -1009,14 +1069,22 @@ writeIDAT4( ThreadPool *thread_pool, std::ofstream& file, const std::vector<char
     }
 #endif
 
+#ifdef PARALLEL
+    std::cerr << "filter+LZenc=" << TimeStamp::delta( T0, T1 )
+              << ", adler32+huffenc=" << TimeStamp::delta( T1, T2 )
+              << ", crc32=" << TimeStamp::delta( T4, T5 )
+              << ", io=" << TimeStamp::delta( T5, T6 )
+              << ", total=" << TimeStamp::delta( T0, T6 ) << "\n";
+#else
     std::cerr << "filter=" << TimeStamp::delta( T0, T1 )
               << ", adler32=" << TimeStamp::delta( T1, T2 )
-              << ", search=" << TimeStamp::delta( T2, T3 )
+              << ", LZenc=" << TimeStamp::delta( T2, T3 )
               << ", huffenc=" << TimeStamp::delta( T3, T4 )
               << ", crc32=" << TimeStamp::delta( T4, T5 )
               << ", io=" << TimeStamp::delta( T5, T6 )
               << ", total=" << TimeStamp::delta( T0, T6 ) << "\n";
-    
+
+#endif
 }
 
 
