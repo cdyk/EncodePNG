@@ -45,9 +45,9 @@ encodeLZ( unsigned int* code_stream,
     }
     
     int next[0x10000];
-    for(int i=0; i<0x10000; i++) {
-        next[i] = -0xfffff;
-    }
+//    for(int i=0; i<0x10000; i++) {
+//        next[i] = -0xfffff;
+//    }
     
 
     //std::vector<int> head(256, -0xfffff);
