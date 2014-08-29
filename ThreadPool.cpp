@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cassert>
+#include <unistd.h>
 #include "ThreadPool.hpp"
 
 JobInterface:: ~JobInterface()
@@ -23,14 +24,49 @@ CompletionToken::~CompletionToken()
 ThreadPool::ThreadPool( int threads )
     : m_done( false )
 {
+    int cores = (int)sysconf( _SC_NPROCESSORS_ONLN );
+    threads = std::max( 1, cores-1 );
+    std::cerr << "Detected " << cores << " cores, creating " << threads << " worker threads.\n";
+    
+    cpu_set_t* cs = CPU_ALLOC( cores );
+    assert( cs != NULL );
+    size_t cs_size = CPU_ALLOC_SIZE( cores );
+     
+
+
+    
+    
+    
+    
     pthread_mutex_init( &m_mutex, NULL );
     pthread_cond_init( &m_notify, NULL );
     m_workers.resize( threads );
+
+    assert( pthread_mutex_lock( &m_mutex ) == 0 );
+    
     for(int i=0; i<threads; i++ ) {
+        
+        
         assert( pthread_create( m_workers.data() + i,
                                 NULL,
                                 workerMain, this ) == 0 );
     }
+
+
+
+    CPU_ZERO_S( cs_size, cs );
+    CPU_SET_S( )
+    
+    
+    pthread_getaffinity_np( pthread_self(), cs_size, cs );
+    
+    std::cerr << "M: ";
+    for(int i=0; i<cores; i++) {
+        std::cerr << i << '=' << CPU_ISSET_S( i, cs_size, cs ) << ' ';
+    }
+    std::cerr << "\n";
+    assert( pthread_mutex_unlock( &m_mutex ) == 0 );
+
 }
 
 ThreadPool::~ThreadPool()
@@ -112,10 +148,34 @@ ThreadPool::wait( CompletionToken* token )
 void*
 ThreadPool::workerMain( void* arg )
 {
+    int cores = (int)sysconf( _SC_NPROCESSORS_ONLN );
+    cpu_set_t* cs = CPU_ALLOC( cores );
+    assert( cs != NULL );
+    size_t cs_size = CPU_ALLOC_SIZE( cores );
+    pthread_getaffinity_np( pthread_self(), cs_size, cs );
+
+    
     ThreadPool* that = (ThreadPool*)arg;
 
-    std::cerr << "Worker thread initialized.\n";
+    //std::cerr << "Worker thread initialized.\n";
     assert( pthread_mutex_lock( &that->m_mutex ) == 0 );
+
+    int id = -1;
+    for(int i=0; i<that->m_workers.size(); i++ ) {
+        if( that->m_workers[i] == pthread_self() ) {
+            id = i;
+            break;
+        }
+    }
+    
+    std::cerr << id << ": ";
+    for(int i=0; i<cores; i++) {
+        std::cerr << i << '=' << CPU_ISSET_S( i, cs_size, cs ) << ' ';
+    }
+    std::cerr << "\n";
+
+    
+    
     while( !that->m_done ) {
 
         // Check if there is work for me
@@ -152,7 +212,7 @@ ThreadPool::workerMain( void* arg )
     }
     assert( pthread_mutex_unlock( &that->m_mutex ) == 0 );
 
-    std::cerr << "Worker thread done.\n";
+    //std::cerr << "Worker thread done.\n";
 
     return NULL;
 }

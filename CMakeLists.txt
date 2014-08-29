@@ -25,4 +25,4 @@ ADD_EXECUTABLE( main "main.cpp"
                 "homebrew_png.cpp"
                 "libjpeg_turbo_wrap.hpp"
                 "libjpeg_turbo_wrap.cpp")
-TARGET_LINK_LIBRARIES( main ${JPEG_TURBO_LIBRARIES} ${PNG_LIBRARIES} ${ZLIB_LIBRARIES} rt )
+TARGET_LINK_LIBRARIES( main  ${JPEG_TURBO_LIBRARIES} ${PNG_LIBRARIES} ${ZLIB_LIBRARIES} rt pthread )
